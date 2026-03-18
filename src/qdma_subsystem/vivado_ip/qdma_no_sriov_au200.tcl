@@ -27,7 +27,7 @@ set_property -dict {
     CONFIG.pf1_pciebar2axibar_2 {0x0000000000000000}
     CONFIG.pf2_pciebar2axibar_2 {0x0000000000000000}
     CONFIG.pf3_pciebar2axibar_2 {0x0000000000000000}
-    CONFIG.dma_reset_source_sel {Phy_Ready}
+    CONFIG.dma_reset_source_sel {PCIe_User_Reset}
     CONFIG.pf0_bar2_scale_qdma {Megabytes}
     CONFIG.pf0_bar2_size_qdma {4}
     CONFIG.pf1_bar2_scale_qdma {Megabytes}
@@ -36,10 +36,10 @@ set_property -dict {
     CONFIG.pf2_bar2_size_qdma {4}
     CONFIG.pf3_bar2_scale_qdma {Megabytes}
     CONFIG.pf3_bar2_size_qdma {4}
-    CONFIG.PF0_MSIX_CAP_TABLE_SIZE_qdma {009}
-    CONFIG.PF1_MSIX_CAP_TABLE_SIZE_qdma {008}
-    CONFIG.PF2_MSIX_CAP_TABLE_SIZE_qdma {008}
-    CONFIG.PF3_MSIX_CAP_TABLE_SIZE_qdma {008}
+    CONFIG.PF0_MSIX_CAP_TABLE_SIZE_qdma {01F}
+    CONFIG.PF1_MSIX_CAP_TABLE_SIZE_qdma {01F}
+    CONFIG.PF2_MSIX_CAP_TABLE_SIZE_qdma {01F}
+    CONFIG.PF3_MSIX_CAP_TABLE_SIZE_qdma {01F}
     CONFIG.dma_intf_sel_qdma {AXI_Stream_with_Completion}
     CONFIG.en_axi_mm_qdma {false}
     CONFIG.SYS_RST_N_BOARD_INTERFACE {pcie_perstn}

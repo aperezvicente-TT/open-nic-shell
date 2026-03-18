@@ -21,6 +21,7 @@ module open_nic_shell #(
   parameter [31:0] BUILD_TIMESTAMP = 32'h01010000,
   parameter int    MIN_PKT_LEN     = 64,
   parameter int    MAX_PKT_LEN     = 1518,
+  parameter real   PKT_CAP         = 64.0,
   parameter int    USE_PHYS_FUNC   = 1,
   parameter int    NUM_PHYS_FUNC   = 1,
   parameter int    NUM_QUEUE       = 512,
@@ -49,6 +50,7 @@ module open_nic_shell #(
   output                   [1:0] qsfp_lpmode,
   output                   [1:0] qsfp_modsell,
   input                    [3:0] satellite_gpio,
+  output                   [2:0] gpio_led,
 `elsif __au250__
   output                   [1:0] qsfp_resetl, 
   input                    [1:0] qsfp_modprsl,
@@ -407,6 +409,8 @@ module open_nic_shell #(
   wire     [NUM_CMAC_PORT-1:0] axis_cmac_rx_tlast;
   wire     [NUM_CMAC_PORT-1:0] axis_cmac_rx_tuser_err;
 
+  wire     [NUM_CMAC_PORT-1:0] cmac_link_up;
+
   wire                  [31:0] shell_rstn;
   wire                  [31:0] shell_rst_done;
   wire          [NUM_QDMA-1:0] qdma_rstn;
@@ -664,6 +668,9 @@ module open_nic_shell #(
   
   `endif
 
+    .cmac_link_up_sync   (cmac_link_up_sync),
+    .link_irq_req        (link_irq_req),
+
     .aclk                (axil_aclk),
     .aresetn             (sys_cfg_powerup_rstn)
   );
@@ -741,6 +748,10 @@ module open_nic_shell #(
       .user_lnk_up                          (pcie_user_lnk_up[i]),
       .phy_ready                            (pcie_phy_ready[i]),
       .powerup_rstn                         (powerup_rstn[i]),
+
+      .usr_irq_in_vld                       (link_irq_req),
+      .usr_irq_in_vec                       (5'd0),
+      .usr_irq_in_fnc                       (8'd0),
   `else // !`ifdef __synthesis__
       .s_axis_qdma_h2c_tvalid               (s_axis_qdma_h2c_sim_tvalid[i]),
       .s_axis_qdma_h2c_tdata                (s_axis_qdma_h2c_sim_tdata[`getvec(512, i)]),
@@ -808,7 +819,8 @@ module open_nic_shell #(
     packet_adapter #(
       .CMAC_ID     (i),
       .MIN_PKT_LEN (MIN_PKT_LEN),
-      .MAX_PKT_LEN (MAX_PKT_LEN)
+      .MAX_PKT_LEN (MAX_PKT_LEN),
+      .PKT_CAP     (PKT_CAP)
     ) packet_adapter_inst (
       .s_axil_awvalid       (axil_adap_awvalid[i]),
       .s_axil_awaddr        (axil_adap_awaddr[`getvec(32, i)]),
@@ -933,6 +945,8 @@ module open_nic_shell #(
 
       .cmac_clk                     (cmac_clk[i]),
 `endif
+
+      .link_up                      (cmac_link_up[i]),
 
       .mod_rstn                     (cmac_rstn[i]),
       .mod_rst_done                 (cmac_rst_done[i]),
@@ -1079,5 +1093,54 @@ module open_nic_shell #(
     .axil_aclk                       (axil_aclk[0]),
     .cmac_clk                        (cmac_clk)
   );
+
+  // --- LED logic (AU200: LED[0]=Red heartbeat, LED[1]=Yellow QSFP1, LED[2]=Green QSFP0) ---
+`ifdef __au200__
+  logic [26:0] led_hb_cnt;
+  always_ff @(posedge axil_aclk[0]) led_hb_cnt <= led_hb_cnt + 1'b1;
+
+  logic [NUM_CMAC_PORT-1:0][24:0] led_act_cnt;
+  logic [NUM_CMAC_PORT-1:0]       led_act_pulse;
+  generate
+    for (genvar k = 0; k < NUM_CMAC_PORT; k++) begin : g_led_act
+      wire pkt_beat = axis_cmac_rx_tvalid[k] |
+                      (axis_cmac_tx_tvalid[k] & axis_cmac_tx_tready[k]);
+      always_ff @(posedge cmac_clk[k]) begin
+        if (pkt_beat)
+          led_act_cnt[k] <= '1;
+        else if (|led_act_cnt[k])
+          led_act_cnt[k] <= led_act_cnt[k] - 1'b1;
+      end
+      assign led_act_pulse[k] = |led_act_cnt[k];
+    end
+  endgenerate
+
+  assign gpio_led[0] = led_hb_cnt[26];
+  assign gpio_led[1] = (NUM_CMAC_PORT > 1) ? cmac_link_up[1] & ~led_act_pulse[1] : 1'b0;
+  assign gpio_led[2] = cmac_link_up[0] & ~led_act_pulse[0];
+`endif
+
+  // Synchronize cmac_link_up (CMAC RX clock domain) into axil_aclk domain for
+  // the SYSCFG edge-detect register and QDMA user interrupt.
+  wire [NUM_CMAC_PORT-1:0] cmac_link_up_sync;
+  wire                     link_irq_req;
+
+`ifdef __synthesis__
+  generate for (genvar i = 0; i < NUM_CMAC_PORT; i++) begin : gen_cmac_lu_cdc
+    xpm_cdc_single #(
+      .DEST_SYNC_FF  (2),
+      .INIT_SYNC_FF  (0),
+      .SRC_INPUT_REG (0)
+    ) cmac_link_up_cdc_inst (
+      .src_clk  (1'b0),
+      .src_in   (cmac_link_up[i]),
+      .dest_clk (axil_aclk[0]),
+      .dest_out (cmac_link_up_sync[i])
+    );
+  end
+  endgenerate
+`else
+  assign cmac_link_up_sync = cmac_link_up;
+`endif
 
 endmodule: open_nic_shell

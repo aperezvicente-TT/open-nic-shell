@@ -94,6 +94,10 @@ module qdma_subsystem #(
   // routed into the `system_config` submodule to generate proper reset signals
   // for each submodule.
   output                         powerup_rstn,
+
+  input                          usr_irq_in_vld,
+  input                    [4:0] usr_irq_in_vec,
+  input                    [7:0] usr_irq_in_fnc,
 `else // !`ifdef __synthesis__
   input                          s_axis_qdma_h2c_tvalid,
   input                  [511:0] s_axis_qdma_h2c_tdata,
@@ -433,6 +437,10 @@ module qdma_subsystem #(
     .phy_ready                       (phy_ready),
 
     .soft_reset_n                    (axil_aresetn),
+
+    .usr_irq_in_vld                  (usr_irq_in_vld),
+    .usr_irq_in_vec                  (usr_irq_in_vec),
+    .usr_irq_in_fnc                  (usr_irq_in_fnc),
 
     .axil_aclk                       (axil_aclk),
     .axis_aclk                       (axis_aclk),

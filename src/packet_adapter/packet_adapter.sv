@@ -17,9 +17,10 @@
 // *************************************************************************
 `timescale 1ns/1ps
 module packet_adapter #(
-  parameter int CMAC_ID     = 0,
-  parameter int MIN_PKT_LEN = 64,
-  parameter int MAX_PKT_LEN = 1518
+  parameter int  CMAC_ID     = 0,
+  parameter int  MIN_PKT_LEN = 64,
+  parameter int  MAX_PKT_LEN = 1518,
+  parameter real PKT_CAP     = 64.0
 ) (
   input          s_axil_awvalid,
   input   [31:0] s_axil_awaddr,
@@ -135,7 +136,7 @@ module packet_adapter #(
   packet_adapter_tx #(
     .CMAC_ID     (CMAC_ID),
     .MAX_PKT_LEN (MAX_PKT_LEN),
-    .PKT_CAP     (1.5)
+    .PKT_CAP     (PKT_CAP)
   ) tx_inst (
     .s_axis_tx_tvalid     (s_axis_tx_tvalid),
     .s_axis_tx_tdata      (s_axis_tx_tdata),
@@ -165,7 +166,7 @@ module packet_adapter #(
   packet_adapter_rx #(
     .CMAC_ID     (CMAC_ID),
     .MAX_PKT_LEN (MAX_PKT_LEN),
-    .PKT_CAP     (1.5)
+    .PKT_CAP     (PKT_CAP)
   ) rx_inst (
     .s_axis_rx_tvalid     (s_axis_rx_tvalid),
     .s_axis_rx_tdata      (s_axis_rx_tdata),

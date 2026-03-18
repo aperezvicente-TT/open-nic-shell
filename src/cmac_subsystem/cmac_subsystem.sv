@@ -84,6 +84,8 @@ module cmac_subsystem #(
   output reg     cmac_clk,
 `endif
 
+  output         link_up,
+
   input          mod_rstn,
   output         mod_rst_done,
   input          axil_aclk
@@ -138,6 +140,12 @@ module cmac_subsystem #(
   wire  [63:0] axis_cmac_rx_tkeep;
   wire         axis_cmac_rx_tlast;
   wire         axis_cmac_rx_tuser_err;
+
+  wire         axis_cmac_rx_drained_tvalid;
+  wire [511:0] axis_cmac_rx_drained_tdata;
+  wire  [63:0] axis_cmac_rx_drained_tkeep;
+  wire         axis_cmac_rx_drained_tlast;
+  wire         axis_cmac_rx_drained_tuser_err;
 
   // Reset is clocked by the 125MHz AXI-Lite clock
   generic_reset #(
@@ -259,18 +267,39 @@ module cmac_subsystem #(
     .aresetn       (cmac_rstn)
   );
 
+  axi_stream_rx_drain #(
+    .TDATA_W       (512),
+    .TUSER_W       (1),
+    .DRAIN_TIMEOUT (16)
+  ) rx_drain_inst (
+    .aclk          (cmac_clk),
+    .aresetn       (cmac_rstn),
+
+    .s_axis_tvalid (axis_cmac_rx_tvalid),
+    .s_axis_tdata  (axis_cmac_rx_tdata),
+    .s_axis_tkeep  (axis_cmac_rx_tkeep),
+    .s_axis_tlast  (axis_cmac_rx_tlast),
+    .s_axis_tuser  (axis_cmac_rx_tuser_err),
+
+    .m_axis_tvalid (axis_cmac_rx_drained_tvalid),
+    .m_axis_tdata  (axis_cmac_rx_drained_tdata),
+    .m_axis_tkeep  (axis_cmac_rx_drained_tkeep),
+    .m_axis_tlast  (axis_cmac_rx_drained_tlast),
+    .m_axis_tuser  (axis_cmac_rx_drained_tuser_err)
+  );
+
   axi_stream_register_slice #(
     .TDATA_W (512),
     .TUSER_W (1),
     .MODE    ("full")
   ) rx_slice_inst (
-    .s_axis_tvalid (axis_cmac_rx_tvalid),
-    .s_axis_tdata  (axis_cmac_rx_tdata),
-    .s_axis_tkeep  (axis_cmac_rx_tkeep),
-    .s_axis_tlast  (axis_cmac_rx_tlast),
+    .s_axis_tvalid (axis_cmac_rx_drained_tvalid),
+    .s_axis_tdata  (axis_cmac_rx_drained_tdata),
+    .s_axis_tkeep  (axis_cmac_rx_drained_tkeep),
+    .s_axis_tlast  (axis_cmac_rx_drained_tlast),
     .s_axis_tid    (0),
     .s_axis_tdest  (0),
-    .s_axis_tuser  (axis_cmac_rx_tuser_err),
+    .s_axis_tuser  (axis_cmac_rx_drained_tuser_err),
     .s_axis_tready (),
 
     .m_axis_tvalid (m_axis_cmac_rx_tvalid),
@@ -335,6 +364,7 @@ module cmac_subsystem #(
     .gt_refclk_p         (gt_refclk_p),
     .gt_refclk_n         (gt_refclk_n),
     .cmac_clk            (cmac_clk),
+    .link_up             (link_up),
     .cmac_sys_reset      (~axil_aresetn),
 
     .axil_aclk           (axil_aclk)
@@ -397,6 +427,7 @@ module cmac_subsystem #(
   assign axis_cmac_rx_tkeep           = s_axis_cmac_rx_sim_tkeep;
   assign axis_cmac_rx_tlast           = s_axis_cmac_rx_sim_tlast;
   assign axis_cmac_rx_tuser_err       = s_axis_cmac_rx_sim_tuser_err;
+  assign link_up                      = 1'b0;
 `endif
 
 endmodule: cmac_subsystem

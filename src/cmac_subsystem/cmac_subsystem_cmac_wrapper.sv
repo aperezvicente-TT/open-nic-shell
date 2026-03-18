@@ -63,6 +63,7 @@ module cmac_subsystem_cmac_wrapper #(
   input          dual1_gt_ref_clk_n,
 `endif
   output         cmac_clk,
+  output         link_up,
   input          cmac_sys_reset,
 
   input          axil_aclk
@@ -212,6 +213,7 @@ module cmac_subsystem_cmac_wrapper #(
   wire        stat_rx_received_local_fault;
   wire        stat_rx_remote_fault;
   wire        stat_rx_status;
+  assign link_up = stat_rx_status;
   wire  [2:0] stat_rx_stomped_fcs;
   wire [19:0] stat_rx_synced;
   wire [19:0] stat_rx_synced_err;

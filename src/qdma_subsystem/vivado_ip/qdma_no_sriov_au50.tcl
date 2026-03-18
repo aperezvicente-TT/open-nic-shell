@@ -27,7 +27,7 @@ set_property -dict {
     CONFIG.pf1_pciebar2axibar_2 {0x0000000000000000}
     CONFIG.pf2_pciebar2axibar_2 {0x0000000000000000}
     CONFIG.pf3_pciebar2axibar_2 {0x0000000000000000}
-    CONFIG.dma_reset_source_sel {Phy_Ready}
+    CONFIG.dma_reset_source_sel {PCIe_User_Reset}
     CONFIG.pf0_bar2_scale_qdma {Megabytes}
     CONFIG.pf0_bar2_size_qdma {4}
     CONFIG.pf1_bar2_scale_qdma {Megabytes}

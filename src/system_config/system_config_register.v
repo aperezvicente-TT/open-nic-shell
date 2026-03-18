@@ -36,9 +36,12 @@
 // -----------------------------------------------------------------------------
 //   0x018  |  RO  | User status register
 // -----------------------------------------------------------------------------
+//   0x01C  |W1C   | CMAC link-up IRQ status (bit i = CMAC i rising-edge event)
+// -----------------------------------------------------------------------------
 `timescale 1ns/1ps
 module system_config_register #(
-  parameter [31:0] BUILD_TIMESTAMP = 32'h01010000
+  parameter [31:0] BUILD_TIMESTAMP = 32'h01010000,
+  parameter        NUM_CMAC_PORT   = 1
 ) (
   input         s_axil_awvalid,
   input  [31:0] s_axil_awaddr,
@@ -62,6 +65,9 @@ module system_config_register #(
   output [31:0] user_rstn,
   input  [31:0] user_rst_done,
 
+  input  [NUM_CMAC_PORT-1:0] cmac_link_up_sync, // already in aclk domain
+  output                     link_irq_req,
+
   input         aclk,
   input         aresetn
 );
@@ -69,13 +75,14 @@ module system_config_register #(
   localparam C_ADDR_W = 12;
 
   // Register address
-  localparam REG_BUILD_TIMESTAMP = 12'h000;
-  localparam REG_SYSTEM_RST      = 12'h004;
-  localparam REG_SYSTEM_STATUS   = 12'h008;
-  localparam REG_SHELL_RST       = 12'h00C;
-  localparam REG_SHELL_STATUS    = 12'h010;
-  localparam REG_USER_RST        = 12'h014;
-  localparam REG_USER_STATUS     = 12'h018;
+  localparam REG_BUILD_TIMESTAMP  = 12'h000;
+  localparam REG_SYSTEM_RST       = 12'h004;
+  localparam REG_SYSTEM_STATUS    = 12'h008;
+  localparam REG_SHELL_RST        = 12'h00C;
+  localparam REG_SHELL_STATUS     = 12'h010;
+  localparam REG_USER_RST         = 12'h014;
+  localparam REG_USER_STATUS      = 12'h018;
+  localparam REG_LINK_IRQ_STATUS  = 12'h01C;
 
   // Regsiters
   reg          [31:0] reg_build_timestamp;
@@ -85,6 +92,9 @@ module system_config_register #(
   reg          [31:0] reg_shell_status;
   reg          [31:0] reg_user_rst;
   reg          [31:0] reg_user_status;
+
+  reg [NUM_CMAC_PORT-1:0] reg_link_irq_status;
+  reg [NUM_CMAC_PORT-1:0] cmac_link_up_prev;
 
   reg          [31:0] shell_rst_last;
   reg          [31:0] user_rst_last;
@@ -149,6 +159,9 @@ module system_config_register #(
         end
         REG_USER_STATUS: begin
           reg_dout <= reg_user_status;
+        end
+        REG_LINK_IRQ_STATUS: begin
+          reg_dout <= {{(32-NUM_CMAC_PORT){1'b0}}, reg_link_irq_status};
         end
         default: begin
           reg_dout <= 32'hDEADBEEF;
@@ -305,5 +318,27 @@ module system_config_register #(
     end
   end
   endgenerate
+
+  // CMAC link-change IRQ status register (W1C)
+  //
+  // Bit i is set on any edge of cmac_link_up_sync[i] (synchronized into
+  // aclk domain by the caller) -- both link UP and link DOWN transitions.
+  // Software clears bits by writing 1s.
+  // link_irq_req stays asserted until all bits are cleared.
+  always @(posedge aclk) begin
+    if (~aresetn) begin
+      cmac_link_up_prev   <= {NUM_CMAC_PORT{1'b0}};
+      reg_link_irq_status <= {NUM_CMAC_PORT{1'b0}};
+    end else begin
+      cmac_link_up_prev <= cmac_link_up_sync;
+      reg_link_irq_status <=
+        (reg_link_irq_status
+          & ~((reg_en & reg_we & (reg_addr == REG_LINK_IRQ_STATUS))
+               ? reg_din[NUM_CMAC_PORT-1:0] : {NUM_CMAC_PORT{1'b0}}))
+        | (cmac_link_up_sync ^ cmac_link_up_prev);
+    end
+  end
+
+  assign link_irq_req = |reg_link_irq_status;
 
 endmodule: system_config_register

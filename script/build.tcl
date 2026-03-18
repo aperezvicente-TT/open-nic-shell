@@ -114,6 +114,7 @@ array set design_params {
     -build_timestamp  0
     -min_pkt_len      64
     -max_pkt_len      1518
+    -pkt_cap          64
     -use_phys_func    1
     -num_phys_func    1
     -num_qdma         1

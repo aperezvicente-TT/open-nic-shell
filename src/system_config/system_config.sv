@@ -128,6 +128,9 @@ module system_config #(
   output                 [31:0] user_rstn,
   input                  [31:0] user_rst_done,
 
+  input     [NUM_CMAC_PORT-1:0] cmac_link_up_sync,
+  output                        link_irq_req,
+
   input                         satellite_uart_0_rxd,
   output                        satellite_uart_0_txd,
 
@@ -482,7 +485,8 @@ module system_config #(
   );
 
   system_config_register #(
-    .BUILD_TIMESTAMP (BUILD_TIMESTAMP)
+    .BUILD_TIMESTAMP (BUILD_TIMESTAMP),
+    .NUM_CMAC_PORT   (NUM_CMAC_PORT)
   ) scfg_reg_inst (
     .s_axil_awvalid (axil_scfg_awvalid),
     .s_axil_awaddr  (axil_scfg_awaddr),
@@ -501,13 +505,16 @@ module system_config #(
     .s_axil_rresp   (axil_scfg_rresp),
     .s_axil_rready  (axil_scfg_rready),
 
-    .shell_rstn     (shell_rstn),
-    .shell_rst_done (shell_rst_done),
-    .user_rstn      (user_rstn),
-    .user_rst_done  (user_rst_done),
+    .shell_rstn          (shell_rstn),
+    .shell_rst_done      (shell_rst_done),
+    .user_rstn           (user_rstn),
+    .user_rst_done       (user_rst_done),
 
-    .aclk           (aclk[0]),
-    .aresetn        (aresetn)
+    .cmac_link_up_sync   (cmac_link_up_sync),
+    .link_irq_req        (link_irq_req),
+
+    .aclk                (aclk[0]),
+    .aresetn             (aresetn)
   );
 
    system_management_wiz
