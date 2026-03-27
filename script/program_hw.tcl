@@ -1,0 +1,200 @@
+#==============================================================================
+# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+# SPDX-License-Identifier: MIT
+#
+#==============================================================================
+#
+#  Usage:
+#    vivado -mode tcl -source program_hw.tcl -tclargs [-prog_file /your/path/to/program/file] 
+#           [-remote_host hostname_or_ip] [-target_id target_name]
+#
+#==============================================================================
+
+# Directory variables
+set root_dir [file normalize ..]
+set script_dir ${root_dir}/script
+set nic_dir ${root_dir}/base_nics/open-nic-shell
+set default_bitstream ${nic_dir}/build/au250/open_nic_shell/open_nic_shell.runs/impl_1/open_nic_shell.bit
+set default_config_file ${nic_dir}/build/au250/open_nic_shell/open_nic_shell.runs/impl_1/open_nic_shell.ltx
+
+puts "root_dir   : $root_dir"
+puts "script_dir : $script_dir"
+puts "nic_dir    : $nic_dir"
+
+set hw_device_id "xcu250_0"
+
+proc getFileSuffix {filename} {
+  set suffix [file extension $filename]
+  return [string range $suffix 1 end]
+}
+
+# Programming options
+#   prog_file  : A file in *.bit or *.mcs used to program FPGA
+#   config_file : A file in *.ltx used to configure DDR
+#   remote_host: hostname or IP address for a remote hw_server
+#   target_id  : Hardware target name ID. User can get it when 
+#                "Open New Target" under "Open Hardware Manager"
+#                in Vivado
+array set prog_options {
+    -prog_file   ""
+    -config_file ""
+    -remote_host ""
+    -target_id   ""
+}
+
+# Expect arguments in the form of `-argument value`
+for {set i 0} {$i < $argc} {incr i 2} {
+    set arg [lindex $argv $i]
+    set val [lindex $argv [expr $i+1]]
+    if {[info exists prog_options($arg)]} {
+        set prog_options($arg) $val
+        puts "Set programming option $arg to $val"
+    } else {
+        puts "Skip unknown argument $arg and its value $val"
+    }
+}
+
+foreach {key value} [array get prog_options] {
+    set [string range $key 1 end] $value
+}
+
+if {[string equal $target_id ""]} {
+    puts "Error: Please provide a hardware target ID for FPGA programming"
+    quit
+}
+
+if {[string equal $prog_file ""]} {
+    set prog_file $default_bitstream
+}
+
+set file_type [getFileSuffix $prog_file]
+
+# Only set default config file for BIT files if it exists, not MCS
+# For MCS, config file is optional
+# For BIT files, config file is also optional but we try to use default if available
+if {[string equal $config_file ""] && [string equal $file_type "bit"]} {
+    if {[file exists $default_config_file]} {
+        set config_file $default_config_file
+    }
+}
+
+puts "Programming file: $prog_file"
+if {![string equal $config_file ""]} {
+    puts "Configuration file: $config_file"
+} else {
+    puts "Configuration file: (not provided - optional for MCS)"
+}
+puts "Hardware target name ID: $target_id"
+
+puts "Open hardware manager and connect to hardware server"
+open_hw_manager
+if {[string equal $remote_host ""]} {
+    connect_hw_server -allow_non_jtag
+} else {
+    puts "Connecting remote hw_server"
+    connect_hw_server -url $remote_host:3121 -allow_non_jtag
+}
+current_hw_target [get_hw_targets */xilinx_tcf/Xilinx/$target_id]
+set_property PARAM.FREQUENCY 15000000 [get_hw_targets */xilinx_tcf/Xilinx/$target_id]
+puts "Open hardware target device"
+open_hw_target
+
+# Get available hardware devices
+set hw_devices [get_hw_devices]
+if {[llength $hw_devices] == 0} {
+    puts "ERROR: No hardware devices found after opening target"
+    puts "Available targets: [get_hw_targets]"
+    quit
+}
+
+# Use the first available device (or detect based on target)
+set hw_device_id [lindex $hw_devices 0]
+puts "Using hardware device: $hw_device_id"
+current_hw_device [get_hw_devices $hw_device_id]
+
+if {[string equal $file_type "bit"]} {
+    puts "=========================================="
+    puts "Programming FPGA with BIT file"
+    puts "=========================================="
+    puts "Step 1/4: Setting up programming files..."
+    set_property PROGRAM.FILE ${prog_file} [get_hw_devices $hw_device_id]
+    # Config file (LTX) is optional for BIT files too
+    if {![string equal $config_file ""] && [file exists $config_file]} {
+        set_property PROBES.FILE ${config_file} [get_hw_devices $hw_device_id]
+        set_property FULL_PROBES.FILE ${config_file} [get_hw_devices $hw_device_id]
+        puts "  Using configuration file: $config_file"
+    } else {
+        puts "  No configuration file provided (optional)"
+    }
+    puts "Step 2/4: Starting FPGA programming..."
+    puts "  This may take a few minutes..."
+    startgroup
+    program_hw_devices [get_hw_devices $hw_device_id]
+    endgroup
+    puts "Step 3/4: Refreshing device..."
+    refresh_hw_device [lindex [get_hw_devices $hw_device_id] 0]
+    puts "Step 4/4: Programming complete!"
+    puts "=========================================="
+    puts "Success: FPGA programming is done"
+    puts "=========================================="
+} elseif {[string equal $file_type "mcs"]} {
+    puts "=========================================="
+    puts "Programming FPGA Configuration Memory (MCS)"
+    puts "=========================================="
+    
+    # Config file (LTX) is optional for MCS programming
+    puts "Step 1/7: Checking configuration file..."
+    if {![string equal $config_file ""] && [file exists $config_file]} {
+        set_property PROBES.FILE ${config_file} [get_hw_devices $hw_device_id]
+        set_property FULL_PROBES.FILE ${config_file} [get_hw_devices $hw_device_id]
+        puts "  Using configuration file: $config_file"
+    } else {
+        puts "  No configuration file provided (optional for MCS)"
+    }
+    
+    puts "Step 2/7: Creating configuration memory object..."
+    create_hw_cfgmem -hw_device [get_hw_devices $hw_device_id] -mem_dev [lindex [get_cfgmem_parts {mt25qu01g-spi-x1_x2_x4}] 0]
+    
+    puts "Step 3/7: Configuring memory programming settings..."
+    set_property PROGRAM.ADDRESS_RANGE  {use_file} [ get_property PROGRAM.HW_CFGMEM [lindex [get_hw_devices $hw_device_id] 0]]
+    set_property PROGRAM.FILES [list "$prog_file" ] [ get_property PROGRAM.HW_CFGMEM [lindex [get_hw_devices $hw_device_id] 0]]
+    set_property PROGRAM.PRM_FILE {} [ get_property PROGRAM.HW_CFGMEM [lindex [get_hw_devices $hw_device_id] 0]]
+    set_property PROGRAM.UNUSED_PIN_TERMINATION {pull-up} [ get_property PROGRAM.HW_CFGMEM [lindex [get_hw_devices $hw_device_id] 0]]
+    set_property PROGRAM.BLANK_CHECK  0 [ get_property PROGRAM.HW_CFGMEM [lindex [get_hw_devices $hw_device_id] 0]]
+    set_property PROGRAM.ERASE  1 [ get_property PROGRAM.HW_CFGMEM [lindex [get_hw_devices $hw_device_id] 0]]
+    set_property PROGRAM.CFG_PROGRAM  1 [ get_property PROGRAM.HW_CFGMEM [lindex [get_hw_devices $hw_device_id] 0]]
+    set_property PROGRAM.VERIFY  1 [ get_property PROGRAM.HW_CFGMEM [lindex [get_hw_devices $hw_device_id] 0]]
+    set_property PROGRAM.CHECKSUM  0 [ get_property PROGRAM.HW_CFGMEM [lindex [get_hw_devices $hw_device_id] 0]]
+    
+    puts "Step 4/7: Creating bitstream and programming device..."
+    puts "  This step may take several minutes..."
+    startgroup 
+    create_hw_bitstream -hw_device [lindex [get_hw_devices $hw_device_id] 0] [get_property PROGRAM.HW_CFGMEM_BITFILE [ lindex [get_hw_devices $hw_device_id] 0]]
+    program_hw_devices [lindex [get_hw_devices $hw_device_id] 0]
+    refresh_hw_device [lindex [get_hw_devices $hw_device_id] 0]
+    endgroup
+    
+    puts "Step 5/7: Programming configuration memory (flash)..."
+    puts "  This is the longest step - programming flash memory..."
+    puts "  Please wait, this may take 5-15 minutes depending on file size..."
+    startgroup
+    program_hw_cfgmem -hw_cfgmem [ get_property PROGRAM.HW_CFGMEM [lindex [get_hw_devices $hw_device_id] 0]]
+    endgroup
+    
+    puts "Step 6/7: Booting device from flash..."
+    boot_hw_device  [lindex [get_hw_devices $hw_device_id] 0]
+    
+    puts "Step 7/7: Refreshing device..."
+    refresh_hw_device [lindex [get_hw_devices $hw_device_id] 0]
+    
+    puts "=========================================="
+    puts "Success: Configuration memory programming is done"
+    puts "=========================================="
+    puts "IMPORTANT: Please reboot the machine for FPGA to load from flash"
+    puts "=========================================="
+} else {
+    puts "Error: Unsupported file type for FPGA programming"
+    quit
+}
+
+quit

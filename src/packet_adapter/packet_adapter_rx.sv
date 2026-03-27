@@ -27,6 +27,7 @@ module packet_adapter_rx #(
   input   [63:0] s_axis_rx_tkeep,
   input          s_axis_rx_tlast,
   input          s_axis_rx_tuser_err,
+  input   [79:0] s_axis_rx_tuser_ptp_ts,
 
   output         m_axis_rx_tvalid,
   output [511:0] m_axis_rx_tdata,
@@ -35,6 +36,7 @@ module packet_adapter_rx #(
   output  [15:0] m_axis_rx_tuser_size,
   output  [15:0] m_axis_rx_tuser_src,
   output  [15:0] m_axis_rx_tuser_dst,
+  output  [79:0] m_axis_rx_tuser_ptp_ts,
   input          m_axis_rx_tready,
 
   // Synchronized to axis_aclk (250MHz)
@@ -67,6 +69,10 @@ module packet_adapter_rx #(
   wire         axis_buf_tlast;
   wire         axis_buf_tuser_err;
   wire         axis_buf_tready;
+
+  // PTP timestamp sideband: capture on first beat, write on packet completion
+  reg  [79:0] rx_ptp_ts_captured;
+  wire [79:0] rx_ptp_ts_fifo_dout;
 
   axi_stream_register_slice #(
     .TDATA_W (512),
@@ -204,5 +210,84 @@ module packet_adapter_rx #(
 
   assign m_axis_rx_tuser_src = 16'h1 << (CMAC_ID + 6);
   assign m_axis_rx_tuser_dst = 0;
+
+  // ---------------------------------------------------------------------------
+  // PTP timestamp sideband FIFO (322MHz -> 250MHz)
+  //
+  // Capture the 80-bit PTP timestamp on the first beat of each packet in the
+  // 322MHz domain (using the post-slice signals).  Write into an async FIFO on
+  // successful packet completion (pkt_recv).  On the 250MHz output side, read
+  // from the FIFO when a complete packet is delivered (tlast).
+  // ---------------------------------------------------------------------------
+
+  // 322MHz side: capture PTP timestamp on the first beat of each input packet.
+  // We use the original (pre-slice) input signals so that the timestamp value
+  // is sampled in the same cycle it is presented, before the register slice
+  // introduces a pipeline delay.
+  reg rx_ptp_ts_in_pkt_pre;
+
+  always @(posedge cmac_clk) begin
+    if (~cmac_rstn) begin
+      rx_ptp_ts_captured  <= 80'd0;
+      rx_ptp_ts_in_pkt_pre <= 1'b0;
+    end
+    else if (s_axis_rx_tvalid) begin
+      if (~rx_ptp_ts_in_pkt_pre) begin
+        // First beat of a new packet: latch the timestamp
+        rx_ptp_ts_captured  <= s_axis_rx_tuser_ptp_ts;
+        rx_ptp_ts_in_pkt_pre <= ~s_axis_rx_tlast;
+      end
+      else if (s_axis_rx_tlast) begin
+        rx_ptp_ts_in_pkt_pre <= 1'b0;
+      end
+    end
+  end
+
+  // Write to sideband FIFO on successful packet receive (same condition as
+  // pkt_recv: packet completed and not dropped)
+  wire rx_ptp_ts_fifo_wr_en = pkt_recv;
+
+  xpm_fifo_async #(
+    .WRITE_DATA_WIDTH  (80),
+    .READ_DATA_WIDTH   (80),
+    .CDC_SYNC_STAGES   (2),
+    .READ_MODE         ("fwft"),
+    .FIFO_MEMORY_TYPE  ("distributed"),
+    .FIFO_WRITE_DEPTH  (64),
+    .FIFO_READ_LATENCY (0),
+    .DOUT_RESET_VALUE  ("0"),
+    .ECC_MODE          ("no_ecc")
+  ) rx_ptp_ts_fifo_inst (
+    .wr_clk        (cmac_clk),
+    .rd_clk        (axis_aclk),
+    .rst           (~cmac_rstn),
+    .wr_en         (rx_ptp_ts_fifo_wr_en),
+    .din           (rx_ptp_ts_captured),
+    .rd_en         (m_axis_rx_tvalid && m_axis_rx_tready && m_axis_rx_tlast),
+    .dout          (rx_ptp_ts_fifo_dout),
+    .wr_ack        (),
+    .data_valid    (),
+    .empty         (),
+    .full          (),
+    .almost_empty  (),
+    .almost_full   (),
+    .overflow      (),
+    .underflow     (),
+    .wr_data_count (),
+    .rd_data_count (),
+    .prog_empty    (),
+    .prog_full     (),
+    .sleep         (1'b0),
+    .sbiterr       (),
+    .dbiterr       (),
+    .injectsbiterr (1'b0),
+    .injectdbiterr (1'b0),
+    .rd_rst_busy   (),
+    .wr_rst_busy   ()
+  );
+
+  // 250MHz side: hold the timestamp value for the entire duration of each
+  // output packet.  Read from the FIFO on packet completion (tlast).
+  assign m_axis_rx_tuser_ptp_ts = rx_ptp_ts_fifo_dout;
 
 endmodule: packet_adapter_rx

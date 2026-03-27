@@ -343,6 +343,23 @@ module open_nic_shell #(
   wire                   [1:0] axil_box1_rresp;
   wire                         axil_box1_rready;
 
+  wire                         axil_ptp_awvalid;
+  wire                  [31:0] axil_ptp_awaddr;
+  wire                         axil_ptp_awready;
+  wire                         axil_ptp_wvalid;
+  wire                  [31:0] axil_ptp_wdata;
+  wire                         axil_ptp_wready;
+  wire                         axil_ptp_bvalid;
+  wire                   [1:0] axil_ptp_bresp;
+  wire                         axil_ptp_bready;
+  wire                         axil_ptp_arvalid;
+  wire                  [31:0] axil_ptp_araddr;
+  wire                         axil_ptp_arready;
+  wire                         axil_ptp_rvalid;
+  wire                  [31:0] axil_ptp_rdata;
+  wire                   [1:0] axil_ptp_rresp;
+  wire                         axil_ptp_rready;
+
   // QDMA subsystem interfaces to the box running at 250MHz
   wire     [NUM_PHYS_FUNC*NUM_QDMA-1:0] axis_qdma_h2c_tvalid;
   wire [512*NUM_PHYS_FUNC*NUM_QDMA-1:0] axis_qdma_h2c_tdata;
@@ -351,6 +368,7 @@ module open_nic_shell #(
   wire  [16*NUM_PHYS_FUNC*NUM_QDMA-1:0] axis_qdma_h2c_tuser_size;
   wire  [16*NUM_PHYS_FUNC*NUM_QDMA-1:0] axis_qdma_h2c_tuser_src;
   wire  [16*NUM_PHYS_FUNC*NUM_QDMA-1:0] axis_qdma_h2c_tuser_dst;
+  wire  [16*NUM_PHYS_FUNC*NUM_QDMA-1:0] axis_qdma_h2c_tuser_ptp_tag;
   wire     [NUM_PHYS_FUNC*NUM_QDMA-1:0] axis_qdma_h2c_tready;
 
   wire     [NUM_PHYS_FUNC*NUM_QDMA-1:0] axis_qdma_c2h_tvalid;
@@ -360,6 +378,7 @@ module open_nic_shell #(
   wire  [16*NUM_PHYS_FUNC*NUM_QDMA-1:0] axis_qdma_c2h_tuser_size;
   wire  [16*NUM_PHYS_FUNC*NUM_QDMA-1:0] axis_qdma_c2h_tuser_src;
   wire  [16*NUM_PHYS_FUNC*NUM_QDMA-1:0] axis_qdma_c2h_tuser_dst;
+  wire  [80*NUM_PHYS_FUNC*NUM_QDMA-1:0] axis_qdma_c2h_tuser_ptp_ts;
   wire     [NUM_PHYS_FUNC*NUM_QDMA-1:0] axis_qdma_c2h_tready;
 
   // Packet adapter interfaces to the box running at 250MHz
@@ -370,6 +389,7 @@ module open_nic_shell #(
   wire  [16*NUM_CMAC_PORT-1:0] axis_adap_tx_250mhz_tuser_size;
   wire  [16*NUM_CMAC_PORT-1:0] axis_adap_tx_250mhz_tuser_src;
   wire  [16*NUM_CMAC_PORT-1:0] axis_adap_tx_250mhz_tuser_dst;
+  wire  [16*NUM_CMAC_PORT-1:0] axis_adap_tx_250mhz_tuser_ptp_tag;
   wire     [NUM_CMAC_PORT-1:0] axis_adap_tx_250mhz_tready;
 
   wire     [NUM_CMAC_PORT-1:0] axis_adap_rx_250mhz_tvalid;
@@ -379,6 +399,7 @@ module open_nic_shell #(
   wire  [16*NUM_CMAC_PORT-1:0] axis_adap_rx_250mhz_tuser_size;
   wire  [16*NUM_CMAC_PORT-1:0] axis_adap_rx_250mhz_tuser_src;
   wire  [16*NUM_CMAC_PORT-1:0] axis_adap_rx_250mhz_tuser_dst;
+  wire  [80*NUM_CMAC_PORT-1:0] axis_adap_rx_250mhz_tuser_ptp_ts;
   wire     [NUM_CMAC_PORT-1:0] axis_adap_rx_250mhz_tready;
 
   // Packet adapter interfaces to the box running at 322MHz
@@ -387,6 +408,7 @@ module open_nic_shell #(
   wire  [64*NUM_CMAC_PORT-1:0] axis_adap_tx_322mhz_tkeep;
   wire     [NUM_CMAC_PORT-1:0] axis_adap_tx_322mhz_tlast;
   wire     [NUM_CMAC_PORT-1:0] axis_adap_tx_322mhz_tuser_err;
+  wire  [16*NUM_CMAC_PORT-1:0] axis_adap_tx_322mhz_tuser_ptp_tag;
   wire     [NUM_CMAC_PORT-1:0] axis_adap_tx_322mhz_tready;
 
   wire     [NUM_CMAC_PORT-1:0] axis_adap_rx_322mhz_tvalid;
@@ -394,6 +416,7 @@ module open_nic_shell #(
   wire  [64*NUM_CMAC_PORT-1:0] axis_adap_rx_322mhz_tkeep;
   wire     [NUM_CMAC_PORT-1:0] axis_adap_rx_322mhz_tlast;
   wire     [NUM_CMAC_PORT-1:0] axis_adap_rx_322mhz_tuser_err;
+  wire  [80*NUM_CMAC_PORT-1:0] axis_adap_rx_322mhz_tuser_ptp_ts;
 
   // CMAC subsystem interfaces to the box running at 322MHz
   wire     [NUM_CMAC_PORT-1:0] axis_cmac_tx_tvalid;
@@ -401,6 +424,7 @@ module open_nic_shell #(
   wire  [64*NUM_CMAC_PORT-1:0] axis_cmac_tx_tkeep;
   wire     [NUM_CMAC_PORT-1:0] axis_cmac_tx_tlast;
   wire     [NUM_CMAC_PORT-1:0] axis_cmac_tx_tuser_err;
+  wire  [16*NUM_CMAC_PORT-1:0] axis_cmac_tx_tuser_ptp_tag;
   wire     [NUM_CMAC_PORT-1:0] axis_cmac_tx_tready;
 
   wire     [NUM_CMAC_PORT-1:0] axis_cmac_rx_tvalid;
@@ -408,6 +432,16 @@ module open_nic_shell #(
   wire  [64*NUM_CMAC_PORT-1:0] axis_cmac_rx_tkeep;
   wire     [NUM_CMAC_PORT-1:0] axis_cmac_rx_tlast;
   wire     [NUM_CMAC_PORT-1:0] axis_cmac_rx_tuser_err;
+  wire  [80*NUM_CMAC_PORT-1:0] axis_cmac_rx_tuser_ptp_ts;
+
+  // PTP subsystem signals
+  wire  [80*NUM_CMAC_PORT-1:0] ptp_time_cmac;        // 80-bit PTP time per port (cmac_clk domain)
+  wire     [NUM_CMAC_PORT-1:0] ptp_tx_ts_valid;      // TX timestamp return valid per port
+  wire  [80*NUM_CMAC_PORT-1:0] ptp_tx_ts;            // TX timestamp return per port
+  wire  [16*NUM_CMAC_PORT-1:0] ptp_tx_ts_tag;        // TX timestamp tag per port
+
+  // QDMA subsystem does not carry PTP tags; tie to 0 for now
+  assign axis_qdma_h2c_tuser_ptp_tag = {16*NUM_PHYS_FUNC*NUM_QDMA{1'b0}};
 
   wire     [NUM_CMAC_PORT-1:0] cmac_link_up;
 
@@ -500,6 +534,9 @@ module open_nic_shell #(
   assign qdma_pcie_txp       = pcie_txp;
   assign qdma_pcie_txn       = pcie_txn;
 `endif
+
+  wire [NUM_CMAC_PORT-1:0] cmac_link_up_sync;
+  wire                     link_irq_req;
 
   system_config #(
     .BUILD_TIMESTAMP (BUILD_TIMESTAMP),
@@ -626,6 +663,23 @@ module open_nic_shell #(
     .m_axil_box1_rdata   (axil_box1_rdata),
     .m_axil_box1_rresp   (axil_box1_rresp),
     .m_axil_box1_rready  (axil_box1_rready),
+
+    .m_axil_ptp_awvalid  (axil_ptp_awvalid),
+    .m_axil_ptp_awaddr   (axil_ptp_awaddr),
+    .m_axil_ptp_awready  (axil_ptp_awready),
+    .m_axil_ptp_wvalid   (axil_ptp_wvalid),
+    .m_axil_ptp_wdata    (axil_ptp_wdata),
+    .m_axil_ptp_wready   (axil_ptp_wready),
+    .m_axil_ptp_bvalid   (axil_ptp_bvalid),
+    .m_axil_ptp_bresp    (axil_ptp_bresp),
+    .m_axil_ptp_bready   (axil_ptp_bready),
+    .m_axil_ptp_arvalid  (axil_ptp_arvalid),
+    .m_axil_ptp_araddr   (axil_ptp_araddr),
+    .m_axil_ptp_arready  (axil_ptp_arready),
+    .m_axil_ptp_rvalid   (axil_ptp_rvalid),
+    .m_axil_ptp_rdata    (axil_ptp_rdata),
+    .m_axil_ptp_rresp    (axil_ptp_rresp),
+    .m_axil_ptp_rready   (axil_ptp_rready),
 
     .shell_rstn          (shell_rstn),
     .shell_rst_done      (shell_rst_done),
@@ -843,32 +897,36 @@ module open_nic_shell #(
       .s_axis_tx_tdata      (axis_adap_tx_250mhz_tdata[`getvec(512, i)]),
       .s_axis_tx_tkeep      (axis_adap_tx_250mhz_tkeep[`getvec(64, i)]),
       .s_axis_tx_tlast      (axis_adap_tx_250mhz_tlast[i]),
-      .s_axis_tx_tuser_size (axis_adap_tx_250mhz_tuser_size[`getvec(16, i)]),
-      .s_axis_tx_tuser_src  (axis_adap_tx_250mhz_tuser_src[`getvec(16, i)]),
-      .s_axis_tx_tuser_dst  (axis_adap_tx_250mhz_tuser_dst[`getvec(16, i)]),
-      .s_axis_tx_tready     (axis_adap_tx_250mhz_tready[i]),
+      .s_axis_tx_tuser_size    (axis_adap_tx_250mhz_tuser_size[`getvec(16, i)]),
+      .s_axis_tx_tuser_src     (axis_adap_tx_250mhz_tuser_src[`getvec(16, i)]),
+      .s_axis_tx_tuser_dst     (axis_adap_tx_250mhz_tuser_dst[`getvec(16, i)]),
+      .s_axis_tx_tuser_ptp_tag (axis_adap_tx_250mhz_tuser_ptp_tag[`getvec(16, i)]),
+      .s_axis_tx_tready        (axis_adap_tx_250mhz_tready[i]),
 
-      .m_axis_rx_tvalid     (axis_adap_rx_250mhz_tvalid[i]),
-      .m_axis_rx_tdata      (axis_adap_rx_250mhz_tdata[`getvec(512, i)]),
-      .m_axis_rx_tkeep      (axis_adap_rx_250mhz_tkeep[`getvec(64, i)]),
-      .m_axis_rx_tlast      (axis_adap_rx_250mhz_tlast[i]),
-      .m_axis_rx_tuser_size (axis_adap_rx_250mhz_tuser_size[`getvec(16, i)]),
-      .m_axis_rx_tuser_src  (axis_adap_rx_250mhz_tuser_src[`getvec(16, i)]),
-      .m_axis_rx_tuser_dst  (axis_adap_rx_250mhz_tuser_dst[`getvec(16, i)]),
-      .m_axis_rx_tready     (axis_adap_rx_250mhz_tready[i]),
+      .m_axis_rx_tvalid        (axis_adap_rx_250mhz_tvalid[i]),
+      .m_axis_rx_tdata         (axis_adap_rx_250mhz_tdata[`getvec(512, i)]),
+      .m_axis_rx_tkeep         (axis_adap_rx_250mhz_tkeep[`getvec(64, i)]),
+      .m_axis_rx_tlast         (axis_adap_rx_250mhz_tlast[i]),
+      .m_axis_rx_tuser_size    (axis_adap_rx_250mhz_tuser_size[`getvec(16, i)]),
+      .m_axis_rx_tuser_src     (axis_adap_rx_250mhz_tuser_src[`getvec(16, i)]),
+      .m_axis_rx_tuser_dst     (axis_adap_rx_250mhz_tuser_dst[`getvec(16, i)]),
+      .m_axis_rx_tuser_ptp_ts  (axis_adap_rx_250mhz_tuser_ptp_ts[`getvec(80, i)]),
+      .m_axis_rx_tready        (axis_adap_rx_250mhz_tready[i]),
 
-      .m_axis_tx_tvalid     (axis_adap_tx_322mhz_tvalid[i]),
-      .m_axis_tx_tdata      (axis_adap_tx_322mhz_tdata[`getvec(512, i)]),
-      .m_axis_tx_tkeep      (axis_adap_tx_322mhz_tkeep[`getvec(64, i)]),
-      .m_axis_tx_tlast      (axis_adap_tx_322mhz_tlast[i]),
-      .m_axis_tx_tuser_err  (axis_adap_tx_322mhz_tuser_err[i]),
-      .m_axis_tx_tready     (axis_adap_tx_322mhz_tready[i]),
+      .m_axis_tx_tvalid        (axis_adap_tx_322mhz_tvalid[i]),
+      .m_axis_tx_tdata         (axis_adap_tx_322mhz_tdata[`getvec(512, i)]),
+      .m_axis_tx_tkeep         (axis_adap_tx_322mhz_tkeep[`getvec(64, i)]),
+      .m_axis_tx_tlast         (axis_adap_tx_322mhz_tlast[i]),
+      .m_axis_tx_tuser_err     (axis_adap_tx_322mhz_tuser_err[i]),
+      .m_axis_tx_tuser_ptp_tag (axis_adap_tx_322mhz_tuser_ptp_tag[`getvec(16, i)]),
+      .m_axis_tx_tready        (axis_adap_tx_322mhz_tready[i]),
 
-      .s_axis_rx_tvalid     (axis_adap_rx_322mhz_tvalid[i]),
-      .s_axis_rx_tdata      (axis_adap_rx_322mhz_tdata[`getvec(512, i)]),
-      .s_axis_rx_tkeep      (axis_adap_rx_322mhz_tkeep[`getvec(64, i)]),
-      .s_axis_rx_tlast      (axis_adap_rx_322mhz_tlast[i]),
-      .s_axis_rx_tuser_err  (axis_adap_rx_322mhz_tuser_err[i]),
+      .s_axis_rx_tvalid        (axis_adap_rx_322mhz_tvalid[i]),
+      .s_axis_rx_tdata         (axis_adap_rx_322mhz_tdata[`getvec(512, i)]),
+      .s_axis_rx_tkeep         (axis_adap_rx_322mhz_tkeep[`getvec(64, i)]),
+      .s_axis_rx_tlast         (axis_adap_rx_322mhz_tlast[i]),
+      .s_axis_rx_tuser_err     (axis_adap_rx_322mhz_tuser_err[i]),
+      .s_axis_rx_tuser_ptp_ts  (axis_adap_rx_322mhz_tuser_ptp_ts[`getvec(80, i)]),
 
       .mod_rstn             (adap_rstn[i]),
       .mod_rst_done         (adap_rst_done[i]),
@@ -905,6 +963,7 @@ module open_nic_shell #(
       .s_axis_cmac_tx_tkeep         (axis_cmac_tx_tkeep[`getvec(64, i)]),
       .s_axis_cmac_tx_tlast         (axis_cmac_tx_tlast[i]),
       .s_axis_cmac_tx_tuser_err     (axis_cmac_tx_tuser_err[i]),
+      .s_axis_cmac_tx_tuser_ptp_tag (axis_cmac_tx_tuser_ptp_tag[`getvec(16, i)]),
       .s_axis_cmac_tx_tready        (axis_cmac_tx_tready[i]),
 
       .m_axis_cmac_rx_tvalid        (axis_cmac_rx_tvalid[i]),
@@ -912,6 +971,12 @@ module open_nic_shell #(
       .m_axis_cmac_rx_tkeep         (axis_cmac_rx_tkeep[`getvec(64, i)]),
       .m_axis_cmac_rx_tlast         (axis_cmac_rx_tlast[i]),
       .m_axis_cmac_rx_tuser_err     (axis_cmac_rx_tuser_err[i]),
+      .m_axis_cmac_rx_tuser_ptp_ts  (axis_cmac_rx_tuser_ptp_ts[`getvec(80, i)]),
+
+      .ptp_time                     (ptp_time_cmac[`getvec(80, i)]),
+      .tx_ptp_ts                    (ptp_tx_ts[`getvec(80, i)]),
+      .tx_ptp_ts_tag                (ptp_tx_ts_tag[`getvec(16, i)]),
+      .tx_ptp_ts_valid              (ptp_tx_ts_valid[i]),
 
 `ifdef __synthesis__
       .gt_rxp                       (qsfp_rxp[`getvec(4, i)]),
@@ -980,41 +1045,45 @@ module open_nic_shell #(
     .s_axil_rresp                     (axil_box0_rresp),
     .s_axil_rready                    (axil_box0_rready),
 
-    .s_axis_qdma_h2c_tvalid           (axis_qdma_h2c_tvalid),
-    .s_axis_qdma_h2c_tdata            (axis_qdma_h2c_tdata),
-    .s_axis_qdma_h2c_tkeep            (axis_qdma_h2c_tkeep),
-    .s_axis_qdma_h2c_tlast            (axis_qdma_h2c_tlast),
-    .s_axis_qdma_h2c_tuser_size       (axis_qdma_h2c_tuser_size),
-    .s_axis_qdma_h2c_tuser_src        (axis_qdma_h2c_tuser_src),
-    .s_axis_qdma_h2c_tuser_dst        (axis_qdma_h2c_tuser_dst),
-    .s_axis_qdma_h2c_tready           (axis_qdma_h2c_tready),
+    .s_axis_qdma_h2c_tvalid               (axis_qdma_h2c_tvalid),
+    .s_axis_qdma_h2c_tdata                (axis_qdma_h2c_tdata),
+    .s_axis_qdma_h2c_tkeep                (axis_qdma_h2c_tkeep),
+    .s_axis_qdma_h2c_tlast                (axis_qdma_h2c_tlast),
+    .s_axis_qdma_h2c_tuser_size           (axis_qdma_h2c_tuser_size),
+    .s_axis_qdma_h2c_tuser_src            (axis_qdma_h2c_tuser_src),
+    .s_axis_qdma_h2c_tuser_dst            (axis_qdma_h2c_tuser_dst),
+    .s_axis_qdma_h2c_tuser_ptp_tag        (axis_qdma_h2c_tuser_ptp_tag),
+    .s_axis_qdma_h2c_tready               (axis_qdma_h2c_tready),
 
-    .m_axis_qdma_c2h_tvalid           (axis_qdma_c2h_tvalid),
-    .m_axis_qdma_c2h_tdata            (axis_qdma_c2h_tdata),
-    .m_axis_qdma_c2h_tkeep            (axis_qdma_c2h_tkeep),
-    .m_axis_qdma_c2h_tlast            (axis_qdma_c2h_tlast),
-    .m_axis_qdma_c2h_tuser_size       (axis_qdma_c2h_tuser_size),
-    .m_axis_qdma_c2h_tuser_src        (axis_qdma_c2h_tuser_src),
-    .m_axis_qdma_c2h_tuser_dst        (axis_qdma_c2h_tuser_dst),
-    .m_axis_qdma_c2h_tready           (axis_qdma_c2h_tready),
+    .m_axis_qdma_c2h_tvalid               (axis_qdma_c2h_tvalid),
+    .m_axis_qdma_c2h_tdata                (axis_qdma_c2h_tdata),
+    .m_axis_qdma_c2h_tkeep                (axis_qdma_c2h_tkeep),
+    .m_axis_qdma_c2h_tlast                (axis_qdma_c2h_tlast),
+    .m_axis_qdma_c2h_tuser_size           (axis_qdma_c2h_tuser_size),
+    .m_axis_qdma_c2h_tuser_src            (axis_qdma_c2h_tuser_src),
+    .m_axis_qdma_c2h_tuser_dst            (axis_qdma_c2h_tuser_dst),
+    .m_axis_qdma_c2h_tuser_ptp_ts         (axis_qdma_c2h_tuser_ptp_ts),
+    .m_axis_qdma_c2h_tready               (axis_qdma_c2h_tready),
 
-    .m_axis_adap_tx_250mhz_tvalid     (axis_adap_tx_250mhz_tvalid),
-    .m_axis_adap_tx_250mhz_tdata      (axis_adap_tx_250mhz_tdata),
-    .m_axis_adap_tx_250mhz_tkeep      (axis_adap_tx_250mhz_tkeep),
-    .m_axis_adap_tx_250mhz_tlast      (axis_adap_tx_250mhz_tlast),
-    .m_axis_adap_tx_250mhz_tuser_size (axis_adap_tx_250mhz_tuser_size),
-    .m_axis_adap_tx_250mhz_tuser_src  (axis_adap_tx_250mhz_tuser_src),
-    .m_axis_adap_tx_250mhz_tuser_dst  (axis_adap_tx_250mhz_tuser_dst),
-    .m_axis_adap_tx_250mhz_tready     (axis_adap_tx_250mhz_tready),
+    .m_axis_adap_tx_250mhz_tvalid         (axis_adap_tx_250mhz_tvalid),
+    .m_axis_adap_tx_250mhz_tdata          (axis_adap_tx_250mhz_tdata),
+    .m_axis_adap_tx_250mhz_tkeep          (axis_adap_tx_250mhz_tkeep),
+    .m_axis_adap_tx_250mhz_tlast          (axis_adap_tx_250mhz_tlast),
+    .m_axis_adap_tx_250mhz_tuser_size     (axis_adap_tx_250mhz_tuser_size),
+    .m_axis_adap_tx_250mhz_tuser_src      (axis_adap_tx_250mhz_tuser_src),
+    .m_axis_adap_tx_250mhz_tuser_dst      (axis_adap_tx_250mhz_tuser_dst),
+    .m_axis_adap_tx_250mhz_tuser_ptp_tag  (axis_adap_tx_250mhz_tuser_ptp_tag),
+    .m_axis_adap_tx_250mhz_tready         (axis_adap_tx_250mhz_tready),
 
-    .s_axis_adap_rx_250mhz_tvalid     (axis_adap_rx_250mhz_tvalid),
-    .s_axis_adap_rx_250mhz_tdata      (axis_adap_rx_250mhz_tdata),
-    .s_axis_adap_rx_250mhz_tkeep      (axis_adap_rx_250mhz_tkeep),
-    .s_axis_adap_rx_250mhz_tlast      (axis_adap_rx_250mhz_tlast),
-    .s_axis_adap_rx_250mhz_tuser_size (axis_adap_rx_250mhz_tuser_size),
-    .s_axis_adap_rx_250mhz_tuser_src  (axis_adap_rx_250mhz_tuser_src),
-    .s_axis_adap_rx_250mhz_tuser_dst  (axis_adap_rx_250mhz_tuser_dst),
-    .s_axis_adap_rx_250mhz_tready     (axis_adap_rx_250mhz_tready),
+    .s_axis_adap_rx_250mhz_tvalid         (axis_adap_rx_250mhz_tvalid),
+    .s_axis_adap_rx_250mhz_tdata          (axis_adap_rx_250mhz_tdata),
+    .s_axis_adap_rx_250mhz_tkeep          (axis_adap_rx_250mhz_tkeep),
+    .s_axis_adap_rx_250mhz_tlast          (axis_adap_rx_250mhz_tlast),
+    .s_axis_adap_rx_250mhz_tuser_size     (axis_adap_rx_250mhz_tuser_size),
+    .s_axis_adap_rx_250mhz_tuser_src      (axis_adap_rx_250mhz_tuser_src),
+    .s_axis_adap_rx_250mhz_tuser_dst      (axis_adap_rx_250mhz_tuser_dst),
+    .s_axis_adap_rx_250mhz_tuser_ptp_ts   (axis_adap_rx_250mhz_tuser_ptp_ts),
+    .s_axis_adap_rx_250mhz_tready         (axis_adap_rx_250mhz_tready),
 
     .mod_rstn                         (user_250mhz_rstn),
     .mod_rst_done                     (user_250mhz_rst_done),
@@ -1058,31 +1127,35 @@ module open_nic_shell #(
     .s_axil_rresp                    (axil_box1_rresp),
     .s_axil_rready                   (axil_box1_rready),
 
-    .s_axis_adap_tx_322mhz_tvalid    (axis_adap_tx_322mhz_tvalid),
-    .s_axis_adap_tx_322mhz_tdata     (axis_adap_tx_322mhz_tdata),
-    .s_axis_adap_tx_322mhz_tkeep     (axis_adap_tx_322mhz_tkeep),
-    .s_axis_adap_tx_322mhz_tlast     (axis_adap_tx_322mhz_tlast),
-    .s_axis_adap_tx_322mhz_tuser_err (axis_adap_tx_322mhz_tuser_err),
-    .s_axis_adap_tx_322mhz_tready    (axis_adap_tx_322mhz_tready),
+    .s_axis_adap_tx_322mhz_tvalid        (axis_adap_tx_322mhz_tvalid),
+    .s_axis_adap_tx_322mhz_tdata         (axis_adap_tx_322mhz_tdata),
+    .s_axis_adap_tx_322mhz_tkeep         (axis_adap_tx_322mhz_tkeep),
+    .s_axis_adap_tx_322mhz_tlast         (axis_adap_tx_322mhz_tlast),
+    .s_axis_adap_tx_322mhz_tuser_err     (axis_adap_tx_322mhz_tuser_err),
+    .s_axis_adap_tx_322mhz_tuser_ptp_tag (axis_adap_tx_322mhz_tuser_ptp_tag),
+    .s_axis_adap_tx_322mhz_tready        (axis_adap_tx_322mhz_tready),
 
-    .m_axis_adap_rx_322mhz_tvalid    (axis_adap_rx_322mhz_tvalid),
-    .m_axis_adap_rx_322mhz_tdata     (axis_adap_rx_322mhz_tdata),
-    .m_axis_adap_rx_322mhz_tkeep     (axis_adap_rx_322mhz_tkeep),
-    .m_axis_adap_rx_322mhz_tlast     (axis_adap_rx_322mhz_tlast),
-    .m_axis_adap_rx_322mhz_tuser_err (axis_adap_rx_322mhz_tuser_err),
+    .m_axis_adap_rx_322mhz_tvalid        (axis_adap_rx_322mhz_tvalid),
+    .m_axis_adap_rx_322mhz_tdata         (axis_adap_rx_322mhz_tdata),
+    .m_axis_adap_rx_322mhz_tkeep         (axis_adap_rx_322mhz_tkeep),
+    .m_axis_adap_rx_322mhz_tlast         (axis_adap_rx_322mhz_tlast),
+    .m_axis_adap_rx_322mhz_tuser_err     (axis_adap_rx_322mhz_tuser_err),
+    .m_axis_adap_rx_322mhz_tuser_ptp_ts  (axis_adap_rx_322mhz_tuser_ptp_ts),
 
-    .m_axis_cmac_tx_tvalid           (axis_cmac_tx_tvalid),
-    .m_axis_cmac_tx_tdata            (axis_cmac_tx_tdata),
-    .m_axis_cmac_tx_tkeep            (axis_cmac_tx_tkeep),
-    .m_axis_cmac_tx_tlast            (axis_cmac_tx_tlast),
-    .m_axis_cmac_tx_tuser_err        (axis_cmac_tx_tuser_err),
-    .m_axis_cmac_tx_tready           (axis_cmac_tx_tready),
+    .m_axis_cmac_tx_tvalid               (axis_cmac_tx_tvalid),
+    .m_axis_cmac_tx_tdata                (axis_cmac_tx_tdata),
+    .m_axis_cmac_tx_tkeep                (axis_cmac_tx_tkeep),
+    .m_axis_cmac_tx_tlast                (axis_cmac_tx_tlast),
+    .m_axis_cmac_tx_tuser_err            (axis_cmac_tx_tuser_err),
+    .m_axis_cmac_tx_tuser_ptp_tag        (axis_cmac_tx_tuser_ptp_tag),
+    .m_axis_cmac_tx_tready               (axis_cmac_tx_tready),
 
-    .s_axis_cmac_rx_tvalid           (axis_cmac_rx_tvalid),
-    .s_axis_cmac_rx_tdata            (axis_cmac_rx_tdata),
-    .s_axis_cmac_rx_tkeep            (axis_cmac_rx_tkeep),
-    .s_axis_cmac_rx_tlast            (axis_cmac_rx_tlast),
-    .s_axis_cmac_rx_tuser_err        (axis_cmac_rx_tuser_err),
+    .s_axis_cmac_rx_tvalid               (axis_cmac_rx_tvalid),
+    .s_axis_cmac_rx_tdata                (axis_cmac_rx_tdata),
+    .s_axis_cmac_rx_tkeep                (axis_cmac_rx_tkeep),
+    .s_axis_cmac_rx_tlast                (axis_cmac_rx_tlast),
+    .s_axis_cmac_rx_tuser_err            (axis_cmac_rx_tuser_err),
+    .s_axis_cmac_rx_tuser_ptp_ts         (axis_cmac_rx_tuser_ptp_ts),
 
     .mod_rstn                        (user_322mhz_rstn),
     .mod_rst_done                    (user_322mhz_rst_done),
@@ -1099,19 +1172,31 @@ module open_nic_shell #(
   logic [26:0] led_hb_cnt;
   always_ff @(posedge axil_aclk[0]) led_hb_cnt <= led_hb_cnt + 1'b1;
 
-  logic [NUM_CMAC_PORT-1:0][24:0] led_act_cnt;
+  // Activity-blink: fixed ~5 Hz visible blink while traffic is present.
+  // A simple pulse-stretcher saturates at line-rate and the LED looks
+  // permanently off.  This free-running oscillator gives a Mellanox-style
+  // steady blink regardless of traffic intensity.
+  //   Period = 2^26 / 322.265625 MHz ≈ 208 ms → ~4.8 Hz blink.
+  logic [NUM_CMAC_PORT-1:0][25:0] led_blink_cnt;
+  logic [NUM_CMAC_PORT-1:0]       led_saw_pkt;
+  logic [NUM_CMAC_PORT-1:0]       led_blink_en;
   logic [NUM_CMAC_PORT-1:0]       led_act_pulse;
   generate
     for (genvar k = 0; k < NUM_CMAC_PORT; k++) begin : g_led_act
       wire pkt_beat = axis_cmac_rx_tvalid[k] |
                       (axis_cmac_tx_tvalid[k] & axis_cmac_tx_tready[k]);
       always_ff @(posedge cmac_clk[k]) begin
+        led_blink_cnt[k] <= led_blink_cnt[k] + 1'b1;
         if (pkt_beat)
-          led_act_cnt[k] <= '1;
-        else if (|led_act_cnt[k])
-          led_act_cnt[k] <= led_act_cnt[k] - 1'b1;
+          led_saw_pkt[k] <= 1'b1;
+        // At counter rollover: latch activity for next period, then clear
+        if (&led_blink_cnt[k]) begin
+          led_blink_en[k] <= led_saw_pkt[k] | pkt_beat;
+          led_saw_pkt[k]  <= 1'b0;
+        end
       end
-      assign led_act_pulse[k] = |led_act_cnt[k];
+      // Upper half of counter → LED off; lower half → LED on
+      assign led_act_pulse[k] = led_blink_en[k] & led_blink_cnt[k][25];
     end
   endgenerate
 
@@ -1120,10 +1205,47 @@ module open_nic_shell #(
   assign gpio_led[2] = cmac_link_up[0] & ~led_act_pulse[0];
 `endif
 
+  // ---------------------------------------------------------------------------
+  // PTP Subsystem
+  // ---------------------------------------------------------------------------
+  ptp_subsystem #(
+    .NUM_CMAC_PORT (NUM_CMAC_PORT)
+  ) ptp_subsystem_inst (
+    .s_axil_awvalid  (axil_ptp_awvalid),
+    .s_axil_awaddr   (axil_ptp_awaddr),
+    .s_axil_awready  (axil_ptp_awready),
+    .s_axil_wvalid   (axil_ptp_wvalid),
+    .s_axil_wdata    (axil_ptp_wdata),
+    .s_axil_wready   (axil_ptp_wready),
+    .s_axil_bvalid   (axil_ptp_bvalid),
+    .s_axil_bresp    (axil_ptp_bresp),
+    .s_axil_bready   (axil_ptp_bready),
+    .s_axil_arvalid  (axil_ptp_arvalid),
+    .s_axil_araddr   (axil_ptp_araddr),
+    .s_axil_arready  (axil_ptp_arready),
+    .s_axil_rvalid   (axil_ptp_rvalid),
+    .s_axil_rdata    (axil_ptp_rdata),
+    .s_axil_rresp    (axil_ptp_rresp),
+    .s_axil_rready   (axil_ptp_rready),
+
+    .ptp_time_cmac   (ptp_time_cmac),
+
+    .tx_ptp_ts_valid (ptp_tx_ts_valid),
+    .tx_ptp_ts       (ptp_tx_ts),
+    .tx_ptp_ts_tag   (ptp_tx_ts_tag),
+
+    .axil_aclk       (axil_aclk[0]),
+    .axil_aresetn    (sys_cfg_powerup_rstn),
+    .axis_aclk       (axis_aclk[0]),
+    .axis_aresetn    (sys_cfg_powerup_rstn),
+    .cmac_clk        (cmac_clk),
+
+    .mod_rstn        (1'b1),
+    .mod_rst_done    ()
+  );
+
   // Synchronize cmac_link_up (CMAC RX clock domain) into axil_aclk domain for
   // the SYSCFG edge-detect register and QDMA user interrupt.
-  wire [NUM_CMAC_PORT-1:0] cmac_link_up_sync;
-  wire                     link_irq_req;
 
 `ifdef __synthesis__
   generate for (genvar i = 0; i < NUM_CMAC_PORT; i++) begin : gen_cmac_lu_cdc

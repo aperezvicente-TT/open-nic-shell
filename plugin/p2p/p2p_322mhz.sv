@@ -42,6 +42,7 @@ module p2p_322mhz #(
   input   [64*NUM_CMAC_PORT-1:0] s_axis_adap_tx_322mhz_tkeep,
   input      [NUM_CMAC_PORT-1:0] s_axis_adap_tx_322mhz_tlast,
   input      [NUM_CMAC_PORT-1:0] s_axis_adap_tx_322mhz_tuser_err,
+  input   [16*NUM_CMAC_PORT-1:0] s_axis_adap_tx_322mhz_tuser_ptp_tag,
   output     [NUM_CMAC_PORT-1:0] s_axis_adap_tx_322mhz_tready,
 
   output     [NUM_CMAC_PORT-1:0] m_axis_adap_rx_322mhz_tvalid,
@@ -49,12 +50,14 @@ module p2p_322mhz #(
   output  [64*NUM_CMAC_PORT-1:0] m_axis_adap_rx_322mhz_tkeep,
   output     [NUM_CMAC_PORT-1:0] m_axis_adap_rx_322mhz_tlast,
   output     [NUM_CMAC_PORT-1:0] m_axis_adap_rx_322mhz_tuser_err,
+  output  [80*NUM_CMAC_PORT-1:0] m_axis_adap_rx_322mhz_tuser_ptp_ts,
 
   output     [NUM_CMAC_PORT-1:0] m_axis_cmac_tx_tvalid,
   output [512*NUM_CMAC_PORT-1:0] m_axis_cmac_tx_tdata,
   output  [64*NUM_CMAC_PORT-1:0] m_axis_cmac_tx_tkeep,
   output     [NUM_CMAC_PORT-1:0] m_axis_cmac_tx_tlast,
   output     [NUM_CMAC_PORT-1:0] m_axis_cmac_tx_tuser_err,
+  output  [16*NUM_CMAC_PORT-1:0] m_axis_cmac_tx_tuser_ptp_tag,
   input      [NUM_CMAC_PORT-1:0] m_axis_cmac_tx_tready,
 
   input      [NUM_CMAC_PORT-1:0] s_axis_cmac_rx_tvalid,
@@ -62,6 +65,7 @@ module p2p_322mhz #(
   input   [64*NUM_CMAC_PORT-1:0] s_axis_cmac_rx_tkeep,
   input      [NUM_CMAC_PORT-1:0] s_axis_cmac_rx_tlast,
   input      [NUM_CMAC_PORT-1:0] s_axis_cmac_rx_tuser_err,
+  input   [80*NUM_CMAC_PORT-1:0] s_axis_cmac_rx_tuser_ptp_ts,
 
   input                          mod_rstn,
   output                         mod_rst_done,
@@ -85,6 +89,10 @@ module p2p_322mhz #(
   wire  [64*NUM_CMAC_PORT-1:0] axis_adap_rx_322mhz_tkeep;
   wire     [NUM_CMAC_PORT-1:0] axis_adap_rx_322mhz_tlast;
   wire     [NUM_CMAC_PORT-1:0] axis_adap_rx_322mhz_tuser_err;
+
+  // PTP sideband passthrough: these signals bypass the register slices
+  assign m_axis_cmac_tx_tuser_ptp_tag     = s_axis_adap_tx_322mhz_tuser_ptp_tag;
+  assign m_axis_adap_rx_322mhz_tuser_ptp_ts = s_axis_cmac_rx_tuser_ptp_ts;
 
   generic_reset #(
     .NUM_INPUT_CLK  (1 + NUM_CMAC_PORT),

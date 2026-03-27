@@ -44,6 +44,8 @@
 // --------------------------------------------------
 //   0x340000  |  0x340FFF |  QSPI
 // --------------------------------------------------
+//    0x18000  |  0x1AFFF  |  PTP subsystem
+// --------------------------------------------------
 
 `include "open_nic_shell_macros.vh"
 `timescale 1ns/1ps
@@ -227,11 +229,28 @@ module system_config_address_map #(
   output                  [2:0] m_axil_qspi_awprot,
   output                  [3:0] m_axil_qspi_wstrb,
 
+  output                        m_axil_ptp_awvalid,
+  output                 [31:0] m_axil_ptp_awaddr,
+  input                         m_axil_ptp_awready,
+  output                        m_axil_ptp_wvalid,
+  output                 [31:0] m_axil_ptp_wdata,
+  input                         m_axil_ptp_wready,
+  input                         m_axil_ptp_bvalid,
+  input                   [1:0] m_axil_ptp_bresp,
+  output                        m_axil_ptp_bready,
+  output                        m_axil_ptp_arvalid,
+  output                 [31:0] m_axil_ptp_araddr,
+  input                         m_axil_ptp_arready,
+  input                         m_axil_ptp_rvalid,
+  input                  [31:0] m_axil_ptp_rdata,
+  input                   [1:0] m_axil_ptp_rresp,
+  output                        m_axil_ptp_rready,
+
   input          [NUM_QDMA-1:0] aclk,
   input                         aresetn
 );
 
-  localparam C_NUM_SLAVES  = 12;
+  localparam C_NUM_SLAVES  = 13;
 
   localparam C_SCFG_INDEX  = 0;
   localparam C_QDMA0_INDEX = 1;
@@ -245,6 +264,7 @@ module system_config_address_map #(
   localparam C_BOX0_INDEX  = 9;
   localparam C_CMS_INDEX   = 10;
   localparam C_QSPI_INDEX  = 11;
+  localparam C_PTP_INDEX   = 12;
 
   localparam C_SCFG_BASE_ADDR  = 32'h0;
   localparam C_QDMA0_BASE_ADDR = 32'h01000;
@@ -258,6 +278,7 @@ module system_config_address_map #(
   localparam C_BOX0_BASE_ADDR  = 32'h100000; // 20 bits
   localparam C_CMS_BASE_ADDR   = 32'h300000; // 18 bits
   localparam C_QSPI_BASE_ADDR  = 32'h340000; // 12 bits
+  localparam C_PTP_BASE_ADDR   = 32'h18000;  // 14 bits
 
   wire                [31:0] axil_scfg_awaddr;
   wire                [31:0] axil_scfg_araddr;
@@ -283,6 +304,8 @@ module system_config_address_map #(
   wire                [31:0] axil_cms_araddr;
   wire                [31:0] axil_qspi_awaddr;
   wire                [31:0] axil_qspi_araddr;
+  wire                [31:0] axil_ptp_awaddr;
+  wire                [31:0] axil_ptp_araddr;
 
   wire        [NUM_QDMA-1:0] axil_pcie_awvalid;
   wire     [32*NUM_QDMA-1:0] axil_pcie_awaddr;
@@ -346,6 +369,8 @@ module system_config_address_map #(
   assign axil_cms_araddr                       = axil_araddr[`getvec(32, C_CMS_INDEX)] - C_CMS_BASE_ADDR;
   assign axil_qspi_awaddr                      = axil_awaddr[`getvec(32, C_QSPI_INDEX)] - C_QSPI_BASE_ADDR;
   assign axil_qspi_araddr                      = axil_araddr[`getvec(32, C_QSPI_INDEX)] - C_QSPI_BASE_ADDR;
+  assign axil_ptp_awaddr                       = axil_awaddr[`getvec(32, C_PTP_INDEX)] - C_PTP_BASE_ADDR;
+  assign axil_ptp_araddr                       = axil_araddr[`getvec(32, C_PTP_INDEX)] - C_PTP_BASE_ADDR;
 
   assign m_axil_scfg_awvalid                   = axil_awvalid[C_SCFG_INDEX];
   assign m_axil_scfg_awaddr                    = axil_scfg_awaddr;
@@ -722,6 +747,23 @@ module system_config_address_map #(
   assign m_axil_qspi_arprot                     = axil_arprot[`getvec(3, C_QSPI_INDEX)];
   assign m_axil_qspi_awprot                     = axil_awprot[`getvec(3, C_QSPI_INDEX)];
   assign m_axil_qspi_wstrb                      = axil_wstrb[`getvec(4, C_QSPI_INDEX)];
+
+  assign m_axil_ptp_awvalid                     = axil_awvalid[C_PTP_INDEX];
+  assign m_axil_ptp_awaddr                      = axil_ptp_awaddr;
+  assign axil_awready[C_PTP_INDEX]              = m_axil_ptp_awready;
+  assign m_axil_ptp_wvalid                      = axil_wvalid[C_PTP_INDEX];
+  assign m_axil_ptp_wdata                       = axil_wdata[`getvec(32, C_PTP_INDEX)];
+  assign axil_wready[C_PTP_INDEX]               = m_axil_ptp_wready;
+  assign axil_bvalid[C_PTP_INDEX]               = m_axil_ptp_bvalid;
+  assign axil_bresp[`getvec(2, C_PTP_INDEX)]    = m_axil_ptp_bresp;
+  assign m_axil_ptp_bready                      = axil_bready[C_PTP_INDEX];
+  assign m_axil_ptp_arvalid                     = axil_arvalid[C_PTP_INDEX];
+  assign m_axil_ptp_araddr                      = axil_ptp_araddr;
+  assign axil_arready[C_PTP_INDEX]              = m_axil_ptp_arready;
+  assign axil_rvalid[C_PTP_INDEX]               = m_axil_ptp_rvalid;
+  assign axil_rdata[`getvec(32, C_PTP_INDEX)]   = m_axil_ptp_rdata;
+  assign axil_rresp[`getvec(2, C_PTP_INDEX)]    = m_axil_ptp_rresp;
+  assign m_axil_ptp_rready                      = axil_rready[C_PTP_INDEX];
 
   generate if (NUM_QDMA > 1) begin
     system_config_axi_clock_converter axi_clk_converter_inst (

@@ -48,6 +48,7 @@ module box_250mhz #(
   input   [16*NUM_PHYS_FUNC*NUM_QDMA-1:0] s_axis_qdma_h2c_tuser_size,
   input   [16*NUM_PHYS_FUNC*NUM_QDMA-1:0] s_axis_qdma_h2c_tuser_src,
   input   [16*NUM_PHYS_FUNC*NUM_QDMA-1:0] s_axis_qdma_h2c_tuser_dst,
+  input   [16*NUM_PHYS_FUNC*NUM_QDMA-1:0] s_axis_qdma_h2c_tuser_ptp_tag,
   output     [NUM_PHYS_FUNC*NUM_QDMA-1:0] s_axis_qdma_h2c_tready,
 
   output     [NUM_PHYS_FUNC*NUM_QDMA-1:0] m_axis_qdma_c2h_tvalid,
@@ -57,6 +58,7 @@ module box_250mhz #(
   output  [16*NUM_PHYS_FUNC*NUM_QDMA-1:0] m_axis_qdma_c2h_tuser_size,
   output  [16*NUM_PHYS_FUNC*NUM_QDMA-1:0] m_axis_qdma_c2h_tuser_src,
   output  [16*NUM_PHYS_FUNC*NUM_QDMA-1:0] m_axis_qdma_c2h_tuser_dst,
+  output  [80*NUM_PHYS_FUNC*NUM_QDMA-1:0] m_axis_qdma_c2h_tuser_ptp_ts,
   input      [NUM_PHYS_FUNC*NUM_QDMA-1:0] m_axis_qdma_c2h_tready,
 
   output     [NUM_CMAC_PORT-1:0] m_axis_adap_tx_250mhz_tvalid,
@@ -66,6 +68,7 @@ module box_250mhz #(
   output  [16*NUM_CMAC_PORT-1:0] m_axis_adap_tx_250mhz_tuser_size,
   output  [16*NUM_CMAC_PORT-1:0] m_axis_adap_tx_250mhz_tuser_src,
   output  [16*NUM_CMAC_PORT-1:0] m_axis_adap_tx_250mhz_tuser_dst,
+  output  [16*NUM_CMAC_PORT-1:0] m_axis_adap_tx_250mhz_tuser_ptp_tag,
   input      [NUM_CMAC_PORT-1:0] m_axis_adap_tx_250mhz_tready,
 
   input      [NUM_CMAC_PORT-1:0] s_axis_adap_rx_250mhz_tvalid,
@@ -75,6 +78,7 @@ module box_250mhz #(
   input   [16*NUM_CMAC_PORT-1:0] s_axis_adap_rx_250mhz_tuser_size,
   input   [16*NUM_CMAC_PORT-1:0] s_axis_adap_rx_250mhz_tuser_src,
   input   [16*NUM_CMAC_PORT-1:0] s_axis_adap_rx_250mhz_tuser_dst,
+  input   [80*NUM_CMAC_PORT-1:0] s_axis_adap_rx_250mhz_tuser_ptp_ts,
   output     [NUM_CMAC_PORT-1:0] s_axis_adap_rx_250mhz_tready,
 
   input                   [15:0] mod_rstn,
@@ -113,15 +117,16 @@ module box_250mhz #(
 
   generate if (USE_PHYS_FUNC == 0) begin
     // Terminate H2C and C2H interfaces of the box
-    assign s_axis_qdma_h2c_tready     = {NUM_PHYS_FUNC*NUM_QDMA{1'b1}};
+    assign s_axis_qdma_h2c_tready       = {NUM_PHYS_FUNC*NUM_QDMA{1'b1}};
 
-    assign m_axis_qdma_c2h_tvalid     = 0;
-    assign m_axis_qdma_c2h_tdata      = 0;
-    assign m_axis_qdma_c2h_tkeep      = 0;
-    assign m_axis_qdma_c2h_tlast      = 0;
-    assign m_axis_qdma_c2h_tuser_size = 0;
-    assign m_axis_qdma_c2h_tuser_src  = 0;
-    assign m_axis_qdma_c2h_tuser_dst  = 0;
+    assign m_axis_qdma_c2h_tvalid       = 0;
+    assign m_axis_qdma_c2h_tdata        = 0;
+    assign m_axis_qdma_c2h_tkeep        = 0;
+    assign m_axis_qdma_c2h_tlast        = 0;
+    assign m_axis_qdma_c2h_tuser_size   = 0;
+    assign m_axis_qdma_c2h_tuser_src    = 0;
+    assign m_axis_qdma_c2h_tuser_dst    = 0;
+    assign m_axis_qdma_c2h_tuser_ptp_ts = 0;
   end
   endgenerate
 

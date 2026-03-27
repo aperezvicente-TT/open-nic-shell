@@ -66,6 +66,15 @@ module cmac_subsystem_cmac_wrapper #(
   output         link_up,
   input          cmac_sys_reset,
 
+  // PTP timestamp interface
+  input  wire [79:0] ptp_time,            // Current PTP time from PTP subsystem (cmac_clk domain)
+  output wire [79:0] tx_ptp_ts,           // TX timestamp return from CMAC
+  output wire [15:0] tx_ptp_ts_tag,       // TX tag return from CMAC
+  output wire        tx_ptp_ts_valid,     // TX timestamp valid
+  output wire [79:0] rx_ptp_ts,           // RX timestamp from CMAC
+  input  wire [15:0] tx_ptp_tag_in,       // TX tag input for tagging packets
+  input  wire  [1:0] tx_ptp_1588op_in,    // TX PTP operation mode (2'b10 = 2-step)
+
   input          axil_aclk
 );
 
@@ -426,6 +435,16 @@ module cmac_subsystem_cmac_wrapper #(
       .tx_unfout                           (tx_unfout),
       .tx_preamblein                       (tx_preamblein),
 
+      // PTP timestamping
+      .ctl_tx_systemtimerin                (ptp_time),
+      .ctl_rx_systemtimerin                (ptp_time),
+      .tx_ptp_1588op_in                    (tx_ptp_1588op_in),
+      .tx_ptp_tag_field_in                 (tx_ptp_tag_in),
+      .tx_ptp_tstamp_out                   (tx_ptp_ts),
+      .tx_ptp_tstamp_tag_out               (tx_ptp_ts_tag),
+      .tx_ptp_tstamp_valid_out             (tx_ptp_ts_valid),
+      .rx_ptp_tstamp_out                   (rx_ptp_ts),
+
       .rx_otn_bip8_0                       (rx_otn_bip8_0),
       .rx_otn_bip8_1                       (rx_otn_bip8_1),
       .rx_otn_bip8_2                       (rx_otn_bip8_2),
@@ -716,6 +735,16 @@ module cmac_subsystem_cmac_wrapper #(
       .tx_ovfout                           (tx_ovfout),
       .tx_unfout                           (tx_unfout),
       .tx_preamblein                       (tx_preamblein),
+
+      // PTP timestamping
+      .ctl_tx_systemtimerin                (ptp_time),
+      .ctl_rx_systemtimerin                (ptp_time),
+      .tx_ptp_1588op_in                    (tx_ptp_1588op_in),
+      .tx_ptp_tag_field_in                 (tx_ptp_tag_in),
+      .tx_ptp_tstamp_out                   (tx_ptp_ts),
+      .tx_ptp_tstamp_tag_out               (tx_ptp_ts_tag),
+      .tx_ptp_tstamp_valid_out             (tx_ptp_ts_valid),
+      .rx_ptp_tstamp_out                   (rx_ptp_ts),
 
       .rx_otn_bip8_0                       (rx_otn_bip8_0),
       .rx_otn_bip8_1                       (rx_otn_bip8_1),

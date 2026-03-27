@@ -40,6 +40,7 @@ set_property -dict {
     CONFIG.INS_LOSS_NYQ {20}
     CONFIG.INCLUDE_RS_FEC {1}
     CONFIG.ENABLE_PIPELINE_REG {1}
+    CONFIG.ENABLE_TIME_STAMPING {1}
 } [get_ips $cmac_usplus]
 set_property CONFIG.RX_MIN_PACKET_LEN $min_pkt_len [get_ips $cmac_usplus]
 set_property CONFIG.RX_MAX_PACKET_LEN $max_pkt_len [get_ips $cmac_usplus]

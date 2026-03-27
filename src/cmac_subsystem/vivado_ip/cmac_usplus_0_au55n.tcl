@@ -44,6 +44,7 @@ set_property -dict {
     CONFIG.ETHERNET_BOARD_INTERFACE {qsfp0_4x}
     CONFIG.DIFFCLK_BOARD_INTERFACE {qsfp0_refclk0}
     CONFIG.ENABLE_PIPELINE_REG {1}
+    CONFIG.ENABLE_TIME_STAMPING {1}
 } [get_ips $cmac_usplus]
 set_property CONFIG.RX_MIN_PACKET_LEN $min_pkt_len [get_ips $cmac_usplus]
 set_property CONFIG.RX_MAX_PACKET_LEN $max_pkt_len [get_ips $cmac_usplus]

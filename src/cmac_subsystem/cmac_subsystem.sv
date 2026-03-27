@@ -50,6 +50,15 @@ module cmac_subsystem #(
   output  [63:0] m_axis_cmac_rx_tkeep,
   output         m_axis_cmac_rx_tlast,
   output         m_axis_cmac_rx_tuser_err,
+  output  [79:0] m_axis_cmac_rx_tuser_ptp_ts,
+
+  // PTP timestamp interface
+  input  wire [79:0] ptp_time,            // Current PTP time (cmac_clk domain)
+  output wire [79:0] tx_ptp_ts,           // TX timestamp return
+  output wire [15:0] tx_ptp_ts_tag,       // TX tag return
+  output wire        tx_ptp_ts_valid,     // TX timestamp valid
+
+  input  wire [15:0] s_axis_cmac_tx_tuser_ptp_tag,
 
 `ifdef __synthesis__
   input    [3:0] gt_rxp,
@@ -147,6 +156,42 @@ module cmac_subsystem #(
   wire         axis_cmac_rx_drained_tlast;
   wire         axis_cmac_rx_drained_tuser_err;
 
+  // PTP timestamp wires and capture logic
+  wire [79:0] rx_ptp_ts_raw;
+  reg  [79:0] rx_ptp_ts_held;
+  wire [15:0] axis_cmac_tx_ptp_tag;
+
+  // RX drained tuser widened to carry PTP timestamp
+  wire [80:0] axis_cmac_rx_drained_tuser_wide;
+  wire [80:0] axis_cmac_rx_tuser_wide;
+
+  // TX tuser widened to carry PTP tag
+  wire [16:0] axis_cmac_tx_tuser_wide;
+
+  // Capture RX PTP timestamp - hold it from when CMAC provides it until packet ends
+  // The CMAC provides rx_ptp_tstamp_out aligned with the start of each packet
+  // Hold it for the duration of the packet
+  reg rx_in_packet;
+  always @(posedge cmac_clk) begin
+    if (!cmac_rstn) begin
+      rx_in_packet <= 1'b0;
+    end else if (axis_cmac_rx_tvalid) begin
+      if (axis_cmac_rx_tlast)
+        rx_in_packet <= 1'b0;
+      else
+        rx_in_packet <= 1'b1;
+    end
+  end
+
+  always @(posedge cmac_clk) begin
+    if (axis_cmac_rx_tvalid && !rx_in_packet) begin
+      rx_ptp_ts_held <= rx_ptp_ts_raw;
+    end
+  end
+
+  // Pack RX tuser: {ptp_ts[79:0], tuser_err} = 81 bits
+  assign axis_cmac_rx_tuser_wide = {rx_ptp_ts_held, axis_cmac_rx_tuser_err};
+
   // Reset is clocked by the 125MHz AXI-Lite clock
   generic_reset #(
     .NUM_INPUT_CLK  (2),
@@ -242,7 +287,7 @@ module cmac_subsystem #(
 
   axi_stream_register_slice #(
     .TDATA_W (512),
-    .TUSER_W (1),
+    .TUSER_W (17),
     .MODE    ("full")
   ) tx_slice_inst (
     .s_axis_tvalid (s_axis_cmac_tx_tvalid),
@@ -251,7 +296,7 @@ module cmac_subsystem #(
     .s_axis_tlast  (s_axis_cmac_tx_tlast),
     .s_axis_tid    (0),
     .s_axis_tdest  (0),
-    .s_axis_tuser  (s_axis_cmac_tx_tuser_err),
+    .s_axis_tuser  ({s_axis_cmac_tx_tuser_ptp_tag, s_axis_cmac_tx_tuser_err}),
     .s_axis_tready (s_axis_cmac_tx_tready),
 
     .m_axis_tvalid (axis_cmac_tx_tvalid),
@@ -260,16 +305,20 @@ module cmac_subsystem #(
     .m_axis_tlast  (axis_cmac_tx_tlast),
     .m_axis_tid    (),
     .m_axis_tdest  (),
-    .m_axis_tuser  (axis_cmac_tx_tuser_err),
+    .m_axis_tuser  (axis_cmac_tx_tuser_wide),
     .m_axis_tready (axis_cmac_tx_tready),
 
     .aclk          (cmac_clk),
     .aresetn       (cmac_rstn)
   );
 
+  // Extract TX tuser fields after register slice
+  assign axis_cmac_tx_tuser_err = axis_cmac_tx_tuser_wide[0];
+  assign axis_cmac_tx_ptp_tag   = axis_cmac_tx_tuser_wide[16:1];
+
   axi_stream_rx_drain #(
     .TDATA_W       (512),
-    .TUSER_W       (1),
+    .TUSER_W       (81),
     .DRAIN_TIMEOUT (16)
   ) rx_drain_inst (
     .aclk          (cmac_clk),
@@ -279,18 +328,22 @@ module cmac_subsystem #(
     .s_axis_tdata  (axis_cmac_rx_tdata),
     .s_axis_tkeep  (axis_cmac_rx_tkeep),
     .s_axis_tlast  (axis_cmac_rx_tlast),
-    .s_axis_tuser  (axis_cmac_rx_tuser_err),
+    .s_axis_tuser  (axis_cmac_rx_tuser_wide),
 
     .m_axis_tvalid (axis_cmac_rx_drained_tvalid),
     .m_axis_tdata  (axis_cmac_rx_drained_tdata),
     .m_axis_tkeep  (axis_cmac_rx_drained_tkeep),
     .m_axis_tlast  (axis_cmac_rx_drained_tlast),
-    .m_axis_tuser  (axis_cmac_rx_drained_tuser_err)
+    .m_axis_tuser  (axis_cmac_rx_drained_tuser_wide)
   );
 
+  // Extract drained RX tuser fields
+  assign axis_cmac_rx_drained_tuser_err = axis_cmac_rx_drained_tuser_wide[0];
+
+  wire [80:0] m_axis_cmac_rx_tuser_wide;
   axi_stream_register_slice #(
     .TDATA_W (512),
-    .TUSER_W (1),
+    .TUSER_W (81),
     .MODE    ("full")
   ) rx_slice_inst (
     .s_axis_tvalid (axis_cmac_rx_drained_tvalid),
@@ -299,7 +352,7 @@ module cmac_subsystem #(
     .s_axis_tlast  (axis_cmac_rx_drained_tlast),
     .s_axis_tid    (0),
     .s_axis_tdest  (0),
-    .s_axis_tuser  (axis_cmac_rx_drained_tuser_err),
+    .s_axis_tuser  (axis_cmac_rx_drained_tuser_wide),
     .s_axis_tready (),
 
     .m_axis_tvalid (m_axis_cmac_rx_tvalid),
@@ -308,12 +361,16 @@ module cmac_subsystem #(
     .m_axis_tlast  (m_axis_cmac_rx_tlast),
     .m_axis_tid    (),
     .m_axis_tdest  (),
-    .m_axis_tuser  (m_axis_cmac_rx_tuser_err),
+    .m_axis_tuser  (m_axis_cmac_rx_tuser_wide),
     .m_axis_tready (1'b1),
 
     .aclk          (cmac_clk),
     .aresetn       (cmac_rstn)
   );
+
+  // Unpack RX tuser output: {ptp_ts[79:0], tuser_err}
+  assign m_axis_cmac_rx_tuser_err    = m_axis_cmac_rx_tuser_wide[0];
+  assign m_axis_cmac_rx_tuser_ptp_ts = m_axis_cmac_rx_tuser_wide[80:1];
 
 `ifdef __synthesis__
   cmac_subsystem_cmac_wrapper #(
@@ -366,6 +423,14 @@ module cmac_subsystem #(
     .cmac_clk            (cmac_clk),
     .link_up             (link_up),
     .cmac_sys_reset      (~axil_aresetn),
+
+    .ptp_time            (ptp_time),
+    .tx_ptp_ts           (tx_ptp_ts),
+    .tx_ptp_ts_tag       (tx_ptp_ts_tag),
+    .tx_ptp_ts_valid     (tx_ptp_ts_valid),
+    .rx_ptp_ts           (rx_ptp_ts_raw),
+    .tx_ptp_tag_in       (axis_cmac_tx_ptp_tag),
+    .tx_ptp_1588op_in    (2'b10),
 
     .axil_aclk           (axil_aclk)
   );
@@ -428,6 +493,12 @@ module cmac_subsystem #(
   assign axis_cmac_rx_tlast           = s_axis_cmac_rx_sim_tlast;
   assign axis_cmac_rx_tuser_err       = s_axis_cmac_rx_sim_tuser_err;
   assign link_up                      = 1'b0;
+
+  // PTP not available in simulation - tie off outputs
+  assign rx_ptp_ts_raw                = 80'b0;
+  assign tx_ptp_ts                    = 80'b0;
+  assign tx_ptp_ts_tag                = 16'b0;
+  assign tx_ptp_ts_valid              = 1'b0;
 `endif
 
 endmodule: cmac_subsystem
