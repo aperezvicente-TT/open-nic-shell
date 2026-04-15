@@ -149,8 +149,7 @@ module p2p_250mhz #(
     assign m_axis_adap_tx_250mhz_tuser_src[`getvec(16, i)]  = axis_adap_tx_250mhz_tuser[16+:16];
     assign m_axis_adap_tx_250mhz_tuser_dst[`getvec(16, i)]  = 16'h1 << (6 + i);
 
-    // PTP sideband passthrough: bypass the AXI pipeline/switch
-    assign m_axis_adap_tx_250mhz_tuser_ptp_tag[`getvec(16, i)] = s_axis_qdma_h2c_tuser_ptp_tag[`getvec(16, i)];
+    // PTP tag extracted from pipeline output below (must travel with data)
 
     if (NUM_QDMA > 1) begin
       // Replicate adapter RX PTP timestamp to each QDMA port for this interface
@@ -263,9 +262,11 @@ module p2p_250mhz #(
     else begin
       wire [47:0] axis_qdma_h2c_tuser;
 
+      // Pack PTP tag into tuser[47:32] (replacing dst which is always 0
+      // from QDMA and overridden to 16'h1<<(6+i) on the output anyway)
       assign axis_qdma_h2c_tuser[0+:16]                       = s_axis_qdma_h2c_tuser_size[`getvec(16, i)];
       assign axis_qdma_h2c_tuser[16+:16]                      = s_axis_qdma_h2c_tuser_src[`getvec(16, i)];
-      assign axis_qdma_h2c_tuser[32+:16]                      = s_axis_qdma_h2c_tuser_dst[`getvec(16, i)];
+      assign axis_qdma_h2c_tuser[32+:16]                      = s_axis_qdma_h2c_tuser_ptp_tag[`getvec(16, i)];
 
       assign m_axis_qdma_c2h_tuser_size[`getvec(16, i)]       = axis_qdma_c2h_tuser[0+:16];
       assign m_axis_qdma_c2h_tuser_src[`getvec(16, i)]        = axis_qdma_c2h_tuser[16+:16];
@@ -290,6 +291,9 @@ module p2p_250mhz #(
         .aclk          (axis_aclk),
         .aresetn       (axil_aresetn)
       );
+
+      // Extract PTP tag from pipeline output (aligned with packet data)
+      assign m_axis_adap_tx_250mhz_tuser_ptp_tag[`getvec(16, i)] = axis_adap_tx_250mhz_tuser[32+:16];
 
       axi_stream_pipeline rx_ppl_inst (
         .s_axis_tvalid (s_axis_adap_rx_250mhz_tvalid[i]),

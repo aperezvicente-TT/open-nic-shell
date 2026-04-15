@@ -53,10 +53,12 @@ module cmac_subsystem #(
   output  [79:0] m_axis_cmac_rx_tuser_ptp_ts,
 
   // PTP timestamp interface
-  input  wire [79:0] ptp_time,            // Current PTP time (cmac_clk domain)
+  input  wire [79:0] ptp_time,            // Current PTP time (cmac_clk domain, for TX)
+  input  wire [79:0] ptp_time_rx,         // Current PTP time (rx_serdes_clk domain, for RX)
   output wire [79:0] tx_ptp_ts,           // TX timestamp return
   output wire [15:0] tx_ptp_ts_tag,       // TX tag return
   output wire        tx_ptp_ts_valid,     // TX timestamp valid
+  output wire        rx_serdes_clk0,      // RX SerDes lane 0 clock output
 
   input  wire [15:0] s_axis_cmac_tx_tuser_ptp_tag,
 
@@ -158,6 +160,8 @@ module cmac_subsystem #(
 
   // PTP timestamp wires and capture logic
   wire [79:0] rx_ptp_ts_raw;
+  wire  [4:0] rx_ptp_pcslane;
+  wire [139:0] rx_lane_aligner_fill;
   reg  [79:0] rx_ptp_ts_held;
   wire [15:0] axis_cmac_tx_ptp_tag;
 
@@ -168,24 +172,91 @@ module cmac_subsystem #(
   // TX tuser widened to carry PTP tag
   wire [16:0] axis_cmac_tx_tuser_wide;
 
+  // ---------------------------------------------------------------------------
+  // RX PTP lane skew compensation (Phase 2) — 2-stage pipeline
+  //
+  // The CMAC timestamps at the gearbox capture plane, but the SOP may arrive
+  // on any of the 20 PCS lanes.  Each lane has a different alignment buffer
+  // fill level, introducing up to ~62 ns of jitter.  Correct it:
+  //   corrected_ts = raw_ts + (ref_fill - sop_lane_fill) * 3 ns
+  //
+  // Pipeline:
+  //   Stage 1 (cycle 0→1): mux lane fill, compute correction_ns, register raw_ts
+  //   Stage 2 (cycle 1→2): add correction, handle wraparound, output
+  //
+  // The timestamp is available 2 cycles after the SOP beat.  Since
+  // rx_ptp_ts_held is held for the entire packet (many cycles), this
+  // 2-cycle latency has no functional impact.
+  // ---------------------------------------------------------------------------
+  localparam [6:0] LANE_FILL_REF = 7'd10; // Typical average fill level (tunable)
+
+  // --- Stage 1: mux + multiply (registered) ---
+  reg signed [11:0] p1_correction_ns;
+  reg        [29:0] p1_raw_ns;
+  reg        [47:0] p1_raw_sec;
+
+  wire [6:0] sop_lane_fill;
+  assign sop_lane_fill = rx_lane_aligner_fill[rx_ptp_pcslane * 7 +: 7];
+
+  // Gate stage 1 with SOP: the CMAC only drives rx_ptp_tstamp_out for one
+  // cycle (when rx_ptp_tstamp_valid_out is asserted, aligned with the SOP
+  // beat).  Without this gate the registers are overwritten with zero on the
+  // very next cycle, before stage 2 can capture the corrected value.
+  wire rx_ptp_sop = axis_cmac_rx_tvalid && !rx_in_packet;
+
+  always @(posedge cmac_clk) begin
+    if (rx_ptp_sop) begin
+      p1_raw_ns  <= rx_ptp_ts_raw[29:0];
+      p1_raw_sec <= rx_ptp_ts_raw[79:32];
+      p1_correction_ns <= ($signed({1'b0, LANE_FILL_REF}) -
+                           $signed({1'b0, sop_lane_fill})) * $signed(12'd3);
+    end
+  end
+
+  // --- Stage 2: add + wraparound (registered into rx_ptp_ts_held) ---
+  wire signed [30:0] corrected_ns_signed;
+  assign corrected_ns_signed = $signed({1'b0, p1_raw_ns}) + p1_correction_ns;
+
+  wire [29:0] corrected_ns;
+  wire [47:0] corrected_sec;
+  assign corrected_ns  = corrected_ns_signed[30] ?
+                          (corrected_ns_signed[29:0] + 30'd1_000_000_000) :
+                          (corrected_ns_signed[30:0] >= 31'd1_000_000_000) ?
+                          (corrected_ns_signed[29:0] - 30'd1_000_000_000) :
+                          corrected_ns_signed[29:0];
+  assign corrected_sec = corrected_ns_signed[30] ? (p1_raw_sec - 48'd1) :
+                          (corrected_ns_signed[30:0] >= 31'd1_000_000_000) ?
+                          (p1_raw_sec + 48'd1) : p1_raw_sec;
+
+  wire [79:0] rx_ptp_ts_corrected = {corrected_sec, 2'b00, corrected_ns};
+
   // Capture RX PTP timestamp - hold it from when CMAC provides it until packet ends
-  // The CMAC provides rx_ptp_tstamp_out aligned with the start of each packet
-  // Hold it for the duration of the packet
+  // The CMAC provides rx_ptp_tstamp_out aligned with the start of each packet.
+  // We delay capture by 2 cycles (pipeline latency) using rx_sop_d to trigger
+  // the hold register on the cycle the corrected timestamp is valid.
   reg rx_in_packet;
+  reg [1:0] rx_sop_d; // 2-cycle delay of SOP detection
+
   always @(posedge cmac_clk) begin
     if (!cmac_rstn) begin
       rx_in_packet <= 1'b0;
-    end else if (axis_cmac_rx_tvalid) begin
-      if (axis_cmac_rx_tlast)
-        rx_in_packet <= 1'b0;
-      else
-        rx_in_packet <= 1'b1;
+      rx_sop_d     <= 2'b00;
+    end else begin
+      // Shift register tracking SOP through pipeline
+      rx_sop_d <= {rx_sop_d[0], axis_cmac_rx_tvalid && !rx_in_packet};
+
+      if (axis_cmac_rx_tvalid) begin
+        if (axis_cmac_rx_tlast)
+          rx_in_packet <= 1'b0;
+        else
+          rx_in_packet <= 1'b1;
+      end
     end
   end
 
   always @(posedge cmac_clk) begin
-    if (axis_cmac_rx_tvalid && !rx_in_packet) begin
-      rx_ptp_ts_held <= rx_ptp_ts_raw;
+    if (rx_sop_d[1]) begin
+      rx_ptp_ts_held <= rx_ptp_ts_corrected;
     end
   end
 
@@ -425,12 +496,17 @@ module cmac_subsystem #(
     .cmac_sys_reset      (~axil_aresetn),
 
     .ptp_time            (ptp_time),
+    .ptp_time_rx         (ptp_time_rx),
     .tx_ptp_ts           (tx_ptp_ts),
     .tx_ptp_ts_tag       (tx_ptp_ts_tag),
     .tx_ptp_ts_valid     (tx_ptp_ts_valid),
     .rx_ptp_ts           (rx_ptp_ts_raw),
+    .rx_ptp_pcslane      (rx_ptp_pcslane),
+    .rx_lane_aligner_fill(rx_lane_aligner_fill),
     .tx_ptp_tag_in       (axis_cmac_tx_ptp_tag),
-    .tx_ptp_1588op_in    (2'b10),
+    .tx_ptp_1588op_in    (axis_cmac_tx_ptp_tag != 16'd0 ? 2'b10 : 2'b00),
+
+    .rx_serdes_clk0      (rx_serdes_clk0),
 
     .axil_aclk           (axil_aclk)
   );

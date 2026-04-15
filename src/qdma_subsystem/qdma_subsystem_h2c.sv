@@ -40,6 +40,7 @@ module qdma_subsystem_h2c #(
   output [512*NUM_PHYS_FUNC-1:0] m_axis_h2c_tdata,
   output     [NUM_PHYS_FUNC-1:0] m_axis_h2c_tlast,
   output  [16*NUM_PHYS_FUNC-1:0] m_axis_h2c_tuser_size,
+  output  [16*NUM_PHYS_FUNC-1:0] m_axis_h2c_tuser_ptp_tag,
   output  [11*NUM_PHYS_FUNC-1:0] m_axis_h2c_tuser_qid,
   input      [NUM_PHYS_FUNC-1:0] m_axis_h2c_tready,
 
@@ -54,6 +55,7 @@ module qdma_subsystem_h2c #(
   wire         axis_h2c_tvalid;
   wire [511:0] axis_h2c_tdata;
   wire         axis_h2c_tlast;
+  wire  [15:0] axis_h2c_tuser_ptp_tag;
   wire  [15:0] axis_h2c_tuser_size;
   wire   [5:0] axis_h2c_tuser_mty;
   wire  [10:0] axis_h2c_tuser_qid;
@@ -64,14 +66,15 @@ module qdma_subsystem_h2c #(
 
   axi_stream_register_slice #(
     .TDATA_W (512),
-    .TUSER_W (33),
+    .TUSER_W (49),
     .MODE    ("forward")
   ) slice_inst (
     .s_axis_tvalid (s_axis_qdma_h2c_tvalid),
     .s_axis_tdata  (s_axis_qdma_h2c_tdata),
     .s_axis_tkeep  ({64{1'b1}}),
     .s_axis_tlast  (s_axis_qdma_h2c_tlast),
-    .s_axis_tuser  ({s_axis_qdma_h2c_tuser_mdata[15:0],
+    .s_axis_tuser  ({s_axis_qdma_h2c_tuser_mdata[31:16],
+                     s_axis_qdma_h2c_tuser_mdata[15:0],
                      s_axis_qdma_h2c_tuser_mty,
                      s_axis_qdma_h2c_tuser_qid}),
     .s_axis_tid    (0),
@@ -82,7 +85,7 @@ module qdma_subsystem_h2c #(
     .m_axis_tdata  (axis_h2c_tdata),
     .m_axis_tkeep  (),
     .m_axis_tlast  (axis_h2c_tlast),
-    .m_axis_tuser  ({axis_h2c_tuser_size, axis_h2c_tuser_mty, axis_h2c_tuser_qid}),
+    .m_axis_tuser  ({axis_h2c_tuser_ptp_tag, axis_h2c_tuser_size, axis_h2c_tuser_mty, axis_h2c_tuser_qid}),
     .m_axis_tid    (),
     .m_axis_tdest  (),
     .m_axis_tready (axis_h2c_tready),
@@ -108,11 +111,12 @@ module qdma_subsystem_h2c #(
   );
 
   generate for (genvar i = 0; i < NUM_PHYS_FUNC; i++) begin
-    assign m_axis_h2c_tvalid[i]                  = axis_h2c_tvalid;
-    assign m_axis_h2c_tdata[`getvec(512, i)]     = axis_h2c_tdata;
-    assign m_axis_h2c_tlast[i]                   = axis_h2c_tlast;
-    assign m_axis_h2c_tuser_size[`getvec(16, i)] = axis_h2c_tuser_size;
-    assign m_axis_h2c_tuser_qid[`getvec(11, i)]  = axis_h2c_tuser_qid;
+    assign m_axis_h2c_tvalid[i]                     = axis_h2c_tvalid;
+    assign m_axis_h2c_tdata[`getvec(512, i)]        = axis_h2c_tdata;
+    assign m_axis_h2c_tlast[i]                      = axis_h2c_tlast;
+    assign m_axis_h2c_tuser_size[`getvec(16, i)]    = axis_h2c_tuser_size;
+    assign m_axis_h2c_tuser_ptp_tag[`getvec(16, i)] = axis_h2c_tuser_ptp_tag;
+    assign m_axis_h2c_tuser_qid[`getvec(11, i)]     = axis_h2c_tuser_qid;
   end
   endgenerate
 

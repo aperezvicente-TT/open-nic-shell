@@ -1,6 +1,6 @@
 set build_dir  "/home/alex/mpi-shfs/fpga/open-nic-shell/build/au200_2cmac_2pf/open_nic_shell"
 set top        "open_nic_shell"
-set impl_run   "impl_1"
+set impl_run   "impl_4"
 
 set bit_file "${build_dir}/${top}.runs/${impl_run}/${top}.bit"
 set mcs_file "[file rootname $bit_file].mcs"

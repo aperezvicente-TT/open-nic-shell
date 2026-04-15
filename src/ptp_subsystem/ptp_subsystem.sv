@@ -29,10 +29,9 @@
 //   [45:16] = nanoseconds (30 bits)
 //   [15:0]  = fractional nanoseconds (16 bits)
 //
-// CMAC uses 80-bit timestamps:
-//   [79:48] = seconds[31:0]
-//   [47:16] = nanoseconds (32 bits, upper 2 bits zero-padded)
-//   [15:0]  = fractional nanoseconds (16 bits)
+// CMAC uses 80-bit IEEE 1588 timestamps (PG203):
+//   [79:32] = seconds (48 bits)
+//   [31:0]  = nanoseconds (32 bits, upper 2 bits always zero)
 //
 `timescale 1ns/1ps
 module ptp_subsystem #(
@@ -56,8 +55,11 @@ module ptp_subsystem #(
   output  [1:0] s_axil_rresp,
   input         s_axil_rready,
 
-  // PTP time output to each CMAC port (each port's cmac_clk domain)
+  // PTP time output to each CMAC port (each port's cmac_clk domain, for TX)
   output [80*NUM_CMAC_PORT-1:0] ptp_time_cmac,
+
+  // PTP time output to each CMAC port (rx_serdes_clk domain, for RX)
+  output [80*NUM_CMAC_PORT-1:0] ptp_time_cmac_rx,
 
   // TX timestamp return from each CMAC (cmac_clk domain)
   input  [NUM_CMAC_PORT-1:0]    tx_ptp_ts_valid,
@@ -70,6 +72,7 @@ module ptp_subsystem #(
   input                          axis_aclk,
   input                          axis_aresetn,
   input  [NUM_CMAC_PORT-1:0]    cmac_clk,
+  input  [NUM_CMAC_PORT-1:0]    rx_serdes_clk,
 
   // Module reset
   input                          mod_rstn,
@@ -111,6 +114,12 @@ module ptp_subsystem #(
   wire        cdc_ts_step [NUM_CMAC_PORT-1:0];
   wire        cdc_pps [NUM_CMAC_PORT-1:0];
   wire        cdc_locked [NUM_CMAC_PORT-1:0];
+
+  // Per-port RX CDC output timestamps (96-bit in rx_serdes_clk domain)
+  wire [95:0] cdc_rx_ts_96 [NUM_CMAC_PORT-1:0];
+  wire        cdc_rx_ts_step [NUM_CMAC_PORT-1:0];
+  wire        cdc_rx_pps [NUM_CMAC_PORT-1:0];
+  wire        cdc_rx_locked [NUM_CMAC_PORT-1:0];
 
   // Reset synchronization
   wire axis_rst = ~axis_aresetn;
@@ -215,15 +224,46 @@ module ptp_subsystem #(
       // -----------------------------------------------------------------------
       // 96-bit to 80-bit timestamp conversion (cmac_clk domain)
       //
-      // 96-bit format: {seconds[47:0], 2'b00, ns[29:0], fns[15:0]}
-      // 80-bit format: {seconds[31:0], 2'b00, ns[29:0], fns[15:0]}
-      //   (Drop upper 16 bits of seconds for CMAC 80-bit interface)
+      // 96-bit Corundum: {seconds[47:0], 2'b00, ns[29:0], fns[15:0]}
+      // 80-bit IEEE 1588: {seconds[47:0], 2'b00, ns[29:0]}
+      //   (fractional ns dropped — CMAC has no sub-ns field)
       // -----------------------------------------------------------------------
       assign ptp_time_cmac[80*gi +: 80] = {
-        cdc_ts_96[gi][79:48],   // seconds[31:0]
-        cdc_ts_96[gi][47:16],   // {2'b00, ns[29:0]}
-        cdc_ts_96[gi][15:0]     // fns[15:0]
+        cdc_ts_96[gi][95:48],   // seconds[47:0]       -> [79:32]
+        cdc_ts_96[gi][47:16]    // {2'b00, ns[29:0]}   -> [31:0]
       };
+
+      // -----------------------------------------------------------------------
+      // RX PTP timestamp: resynchronize TX CDC output to rx_serdes_clk
+      //
+      // The separate ptp_clock_cdc for the RX path accumulates ~50 PPM drift
+      // relative to the TX CDC, despite both tracking the same master clock.
+      // The recovered rx_serdes_clk jitter degrades the RX CDC's PI tracking,
+      // producing timestamps hundreds of ms behind the TX CDC.
+      //
+      // Fix: use the TX CDC's 80-bit output (cmac_clk domain) and cross it
+      // to rx_serdes_clk with a 2-stage synchronizer.  cmac_clk and
+      // rx_serdes_clk are mesochronous (~322 MHz from different sources), so
+      // metastability can only affect LSBs — worst case ~6 ns jitter, well
+      // within the CMAC's own timestamp granularity.  The CMAC registers
+      // ctl_rx_systemtimerin internally on rx_serdes_clk[0] (PG203), so
+      // one extra register stage here gives the same 2-deep synchronizer
+      // depth that the CMAC already expects.
+      // -----------------------------------------------------------------------
+      (* ASYNC_REG = "TRUE" *)
+      reg [79:0] rx_ts_sync1, rx_ts_sync2;
+      always @(posedge rx_serdes_clk[gi]) begin
+        rx_ts_sync1 <= ptp_time_cmac[80*gi +: 80];
+        rx_ts_sync2 <= rx_ts_sync1;
+      end
+
+      assign ptp_time_cmac_rx[80*gi +: 80] = rx_ts_sync2;
+
+      // Keep CDC status signals valid for the register interface
+      assign cdc_rx_ts_96[gi]  = 96'd0;  // unused — RX now derived from TX CDC
+      assign cdc_rx_ts_step[gi] = 1'b0;
+      assign cdc_rx_pps[gi]     = 1'b0;
+      assign cdc_rx_locked[gi]  = cdc_locked[gi]; // mirror TX lock status
 
       // -----------------------------------------------------------------------
       // TX Timestamp Async FIFO: cmac_clk[gi] (322 MHz) -> axis_aclk (250 MHz)
@@ -250,7 +290,7 @@ module ptp_subsystem #(
 
       xpm_fifo_async #(
         .FIFO_MEMORY_TYPE   ("auto"),
-        .FIFO_WRITE_DEPTH   (16),
+        .FIFO_WRITE_DEPTH   (64),
         .WRITE_DATA_WIDTH   (96),
         .READ_DATA_WIDTH    (96),
         .READ_MODE          ("fwft"),
@@ -301,6 +341,19 @@ module ptp_subsystem #(
   endgenerate
 
   // ---------------------------------------------------------------------------
+  // Pack CDC locked status: [0]=port0_tx, [1]=port0_rx, [2]=port1_tx, [3]=port1_rx
+  // ---------------------------------------------------------------------------
+  wire [3:0] cdc_locked_packed;
+  generate
+    if (NUM_CMAC_PORT > 1) begin : gen_locked_2port
+      assign cdc_locked_packed = {cdc_rx_locked[1], cdc_locked[1],
+                                  cdc_rx_locked[0], cdc_locked[0]};
+    end else begin : gen_locked_1port
+      assign cdc_locked_packed = {2'b00, cdc_rx_locked[0], cdc_locked[0]};
+    end
+  endgenerate
+
+  // ---------------------------------------------------------------------------
   // PTP Subsystem Register Bank
   // ---------------------------------------------------------------------------
   ptp_subsystem_register #(
@@ -344,6 +397,8 @@ module ptp_subsystem #(
     .tx_ts_data         (fifo_tx_ts_data),
     .tx_ts_tag          (fifo_tx_ts_tag),
     .tx_ts_pop          (fifo_tx_ts_pop),
+
+    .cdc_locked         (cdc_locked_packed),
 
     .axil_aclk          (axil_aclk),
     .axil_aresetn       (axil_aresetn),

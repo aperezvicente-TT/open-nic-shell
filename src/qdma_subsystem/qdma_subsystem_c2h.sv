@@ -25,6 +25,7 @@ module qdma_subsystem_c2h #(
   input     [NUM_PHYS_FUNC-1:0] s_axis_c2h_tlast,
   input  [16*NUM_PHYS_FUNC-1:0] s_axis_c2h_tuser_size,
   input  [11*NUM_PHYS_FUNC-1:0] s_axis_c2h_tuser_qid,
+  input  [80*NUM_PHYS_FUNC-1:0] s_axis_c2h_tuser_ptp_ts,
   output    [NUM_PHYS_FUNC-1:0] s_axis_c2h_tready,
 
   output                        m_axis_qdma_c2h_tvalid,
@@ -74,7 +75,11 @@ module qdma_subsystem_c2h #(
   reg                      axis_c2h_tlast;
   reg               [15:0] axis_c2h_tuser_size;
   reg               [10:0] axis_c2h_tuser_qid;
+  reg               [79:0] axis_c2h_tuser_ptp_ts;
   wire                     axis_c2h_tready;
+
+  // Post-register-slice PTP timestamp (extracted from widened tuser)
+  wire              [79:0] axis_c2h_tuser_ptp_ts_post;
 
   wire                     crc32_en;
   wire             [511:0] crc32_data;
@@ -92,6 +97,9 @@ module qdma_subsystem_c2h #(
   wire              [42:0] cpl_fifo_dout;
   wire                     cpl_fifo_empty;
   wire                     cpl_fifo_full;
+
+  // PTP timestamp sideband FIFO (80b: 48b seconds + 32b nanoseconds)
+  wire              [79:0] ts_fifo_dout;
 
   generate for (genvar i = 0; i < NUM_PHYS_FUNC; i += 1) begin
     always @(posedge axis_aclk) begin
@@ -126,19 +134,21 @@ module qdma_subsystem_c2h #(
   );
 
   always @(*) begin
-    axis_c2h_tvalid     = 1'b0;
-    axis_c2h_tdata      = 0;
-    axis_c2h_tlast      = 1'b0;
-    axis_c2h_tuser_size = 0;
-    axis_c2h_tuser_qid  = 0;
+    axis_c2h_tvalid       = 1'b0;
+    axis_c2h_tdata        = 0;
+    axis_c2h_tlast        = 1'b0;
+    axis_c2h_tuser_size   = 0;
+    axis_c2h_tuser_qid    = 0;
+    axis_c2h_tuser_ptp_ts = 0;
 
     for (int i = 0; i < NUM_PHYS_FUNC; i += 1) begin
       if (arb_grant[i]) begin
-        axis_c2h_tvalid     = s_axis_c2h_tvalid[i];
-        axis_c2h_tdata      = s_axis_c2h_tdata[`getvec(512, i)];
-        axis_c2h_tlast      = s_axis_c2h_tlast[i];
-        axis_c2h_tuser_size = s_axis_c2h_tuser_size[`getvec(16, i)];
-        axis_c2h_tuser_qid  = s_axis_c2h_tuser_qid[`getvec(11, i)];
+        axis_c2h_tvalid       = s_axis_c2h_tvalid[i];
+        axis_c2h_tdata        = s_axis_c2h_tdata[`getvec(512, i)];
+        axis_c2h_tlast        = s_axis_c2h_tlast[i];
+        axis_c2h_tuser_size   = s_axis_c2h_tuser_size[`getvec(16, i)];
+        axis_c2h_tuser_qid    = s_axis_c2h_tuser_qid[`getvec(11, i)];
+        axis_c2h_tuser_ptp_ts = s_axis_c2h_tuser_ptp_ts[`getvec(80, i)];
         break;
       end
     end
@@ -146,7 +156,7 @@ module qdma_subsystem_c2h #(
 
   axi_stream_register_slice #(
     .TDATA_W (512),
-    .TUSER_W (16 + 11),
+    .TUSER_W (16 + 11 + 80),
     .MODE    ("forward")
   ) slice_inst (
     .s_axis_tvalid (axis_c2h_tvalid),
@@ -155,7 +165,7 @@ module qdma_subsystem_c2h #(
     .s_axis_tlast  (axis_c2h_tlast),
     .s_axis_tid    (0),
     .s_axis_tdest  (0),
-    .s_axis_tuser  ({axis_c2h_tuser_size, axis_c2h_tuser_qid}),
+    .s_axis_tuser  ({axis_c2h_tuser_ptp_ts, axis_c2h_tuser_size, axis_c2h_tuser_qid}),
     .s_axis_tready (axis_c2h_tready),
 
     .m_axis_tvalid (m_axis_qdma_c2h_tvalid),
@@ -164,7 +174,7 @@ module qdma_subsystem_c2h #(
     .m_axis_tlast  (m_axis_qdma_c2h_tlast),
     .m_axis_tid    (),
     .m_axis_tdest  (),
-    .m_axis_tuser  ({m_axis_qdma_c2h_ctrl_len, m_axis_qdma_c2h_ctrl_qid}),
+    .m_axis_tuser  ({axis_c2h_tuser_ptp_ts_post, m_axis_qdma_c2h_ctrl_len, m_axis_qdma_c2h_ctrl_qid}),
     .m_axis_tready (m_axis_qdma_c2h_tready),
 
     .aclk          (axis_aclk),
@@ -278,14 +288,64 @@ module qdma_subsystem_c2h #(
   assign cpl_fifo_din   = {m_axis_qdma_c2h_ctrl_qid, 16'(pkt_pld_id + 1), m_axis_qdma_c2h_ctrl_len};
   assign cpl_fifo_rd_en = m_axis_qdma_cpl_tvalid && m_axis_qdma_cpl_tready;
 
+  // PTP timestamp sideband FIFO — must stay in lock-step with cpl_fifo.
+  // Write data comes from the post-register-slice timestamp, same timing as
+  // cpl_fifo_din (which uses post-slice ctrl_qid / ctrl_len).
+  xpm_fifo_sync #(
+    .DOUT_RESET_VALUE    ("0"),
+    .ECC_MODE            ("no_ecc"),
+    .FIFO_MEMORY_TYPE    ("block"),
+    .FIFO_READ_LATENCY   (1),
+    .FIFO_WRITE_DEPTH    (512),
+    .READ_DATA_WIDTH     (80),
+    .READ_MODE           ("fwft"),
+    .WRITE_DATA_WIDTH    (80),
+    .PROG_FULL_THRESH    (512-5)
+  ) ts_fifo_inst (
+    .wr_en         (cpl_fifo_wr_en),
+    .din           (axis_c2h_tuser_ptp_ts_post),
+    .wr_ack        (),
+    .rd_en         (cpl_fifo_rd_en),
+    .data_valid    (),
+    .dout          (ts_fifo_dout),
+
+    .wr_data_count (),
+    .rd_data_count (),
+
+    .empty         (),
+    .full          (),
+    .almost_empty  (),
+    .almost_full   (),
+    .overflow      (),
+    .underflow     (),
+    .prog_empty    (),
+    .prog_full     (),
+    .sleep         (1'b0),
+
+    .sbiterr       (),
+    .dbiterr       (),
+    .injectsbiterr (1'b0),
+    .injectdbiterr (1'b0),
+
+    .wr_clk        (axis_aclk),
+    .rst           (~axil_aresetn),
+    .rd_rst_busy   (),
+    .wr_rst_busy   ()
+  );
+
   assign m_axis_qdma_cpl_tvalid               = ~cpl_fifo_empty;
-  assign m_axis_qdma_cpl_tdata[511:256]       = 0;
-  assign m_axis_qdma_cpl_tdata[255:128]       = 0;
-  assign m_axis_qdma_cpl_tdata[127:64]        = 0;
+  assign m_axis_qdma_cpl_tdata[511:128]       = 0;
+  // DWORD 3: seconds_lo[31:0] (ts[63:32])
+  assign m_axis_qdma_cpl_tdata[127:96]        = ts_fifo_dout[63:32];
+  // DWORD 2: nanoseconds[31:0] (ts[31:0])
+  assign m_axis_qdma_cpl_tdata[95:64]         = ts_fifo_dout[31:0];
+  // DWORD 1: {pkt_id[15:0], pkt_len[15:0]} — unchanged
   assign m_axis_qdma_cpl_tdata[63:32]         = cpl_fifo_dout[31:0];
+  // DWORD 0: {reserved[15:0], seconds_hi[15:0]} with qid in [26:16]
   assign m_axis_qdma_cpl_tdata[31:27]         = 0;
   assign m_axis_qdma_cpl_tdata[26:16]         = cpl_fifo_dout[42:32];
-  assign m_axis_qdma_cpl_tdata[15:0]          = 0;
+  // seconds_hi = ts[79:64] (upper 16 bits of 48-bit seconds)
+  assign m_axis_qdma_cpl_tdata[15:0]          = ts_fifo_dout[79:64];
 
   assign m_axis_qdma_cpl_ctrl_no_wrb_marker   = 1'b0;
   assign m_axis_qdma_cpl_ctrl_col_idx         = 0;
@@ -295,7 +355,7 @@ module qdma_subsystem_c2h #(
   assign m_axis_qdma_cpl_ctrl_cmpt_type       = 2'b11;  //regular mode
   assign m_axis_qdma_cpl_ctrl_user_trig       = 1'b0;
   assign m_axis_qdma_cpl_ctrl_port_id         = 0;
-  assign m_axis_qdma_cpl_size                 = 2'b00; // 8B completion packet
+  assign m_axis_qdma_cpl_size                 = 2'b01; // 16B completion packet (PTP timestamp)
   assign m_axis_qdma_cpl_ctrl_wait_pld_pkt_id = cpl_fifo_dout[31:16];
   generate for (genvar i = 0; i < 16; i = i + 1) begin
     assign m_axis_qdma_cpl_dpar[i] = ~(^m_axis_qdma_cpl_tdata[(i*32) +: 32]);

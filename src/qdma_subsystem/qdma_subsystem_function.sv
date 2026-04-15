@@ -45,6 +45,7 @@ module qdma_subsystem_function #(
   input          s_axis_h2c_tlast,
   input   [15:0] s_axis_h2c_tuser_size,
   input   [10:0] s_axis_h2c_tuser_qid,
+  input   [15:0] s_axis_h2c_tuser_ptp_tag,
   output         s_axis_h2c_tready,
 
   output         m_axis_h2c_tvalid,
@@ -54,6 +55,7 @@ module qdma_subsystem_function #(
   output  [15:0] m_axis_h2c_tuser_size,
   output  [15:0] m_axis_h2c_tuser_src,
   output  [15:0] m_axis_h2c_tuser_dst,
+  output  [15:0] m_axis_h2c_tuser_ptp_tag,
   input          m_axis_h2c_tready,
 
   input          s_axis_c2h_tvalid,
@@ -63,6 +65,7 @@ module qdma_subsystem_function #(
   input   [15:0] s_axis_c2h_tuser_size,
   input   [15:0] s_axis_c2h_tuser_src,
   input   [15:0] s_axis_c2h_tuser_dst,
+  input   [79:0] s_axis_c2h_tuser_ptp_ts,
   output         s_axis_c2h_tready,
 
   output         m_axis_c2h_tvalid,
@@ -70,6 +73,7 @@ module qdma_subsystem_function #(
   output         m_axis_c2h_tlast,
   output  [15:0] m_axis_c2h_tuser_size,
   output  [10:0] m_axis_c2h_tuser_qid,
+  output  [79:0] m_axis_c2h_tuser_ptp_ts,
   input          m_axis_c2h_tready,
 
   input          axil_aclk,
@@ -122,6 +126,13 @@ module qdma_subsystem_function #(
   wire          axis_c2h_buf_tlast;
   wire   [15:0] axis_c2h_buf_tuser_size;
   wire          axis_c2h_buf_tready;
+
+  // PTP timestamp sideband FIFO signals
+  wire          ptp_ts_fifo_wr_en;
+  wire          ptp_ts_fifo_rd_en;
+  wire   [79:0] ptp_ts_fifo_dout;
+  wire          ptp_ts_fifo_empty;
+  wire          ptp_ts_fifo_full;
 
   qdma_subsystem_function_register reg_inst (
     .s_axil_awvalid (s_axil_awvalid),
@@ -251,34 +262,43 @@ module qdma_subsystem_function #(
   end
   endgenerate
 
-  assign m_axis_h2c_tuser_src = 16'h1 << FUNC_ID;
-  assign m_axis_h2c_tuser_dst = 0;
+  assign m_axis_h2c_tuser_src     = 16'h1 << FUNC_ID;
+  assign m_axis_h2c_tuser_dst     = 0;
+  assign m_axis_h2c_tuser_ptp_tag = s_axis_h2c_tuser_ptp_tag;
 
   // ==========
   // RX path
   // ==========
 
+  // Post-slice PTP timestamp (aligned with axis_c2h_* timing)
+  wire [79:0] axis_c2h_tuser_ptp_ts;
+
   generate if (QDMA_ID == 0) begin
     // RX packets should have valid `tuser_size` interpreted as packet size.
+    // TUSER widened to 96 bits: {ptp_ts[79:0], size[15:0]} so the PTP
+    // timestamp crosses the register slice and stays aligned with data.
+    wire [95:0] c2h_slice_tuser_in  = {s_axis_c2h_tuser_ptp_ts, s_axis_c2h_tuser_size};
+    wire [95:0] c2h_slice_tuser_out;
+
     axi_stream_register_slice #(
       .TDATA_W (512),
-      .TUSER_W (16),
+      .TUSER_W (96),
       .MODE    ("full")
     ) c2h_slice_inst (
       .s_axis_tvalid    (s_axis_c2h_tvalid),
       .s_axis_tdata     (s_axis_c2h_tdata),
       .s_axis_tkeep     ({64{1'b1}}),
       .s_axis_tlast     (s_axis_c2h_tlast),
-      .s_axis_tuser     (s_axis_c2h_tuser_size),
+      .s_axis_tuser     (c2h_slice_tuser_in),
       .s_axis_tid       (0),
       .s_axis_tdest     (0),
       .s_axis_tready    (s_axis_c2h_tready),
-      
+
       .m_axis_tvalid    (axis_c2h_tvalid),
       .m_axis_tdata     (axis_c2h_tdata),
       .m_axis_tkeep     (),
       .m_axis_tlast     (axis_c2h_tlast),
-      .m_axis_tuser     (axis_c2h_tuser_size),
+      .m_axis_tuser     (c2h_slice_tuser_out),
       .m_axis_tid       (),
       .m_axis_tdest     (),
       .m_axis_tready    (axis_c2h_tready),
@@ -286,6 +306,9 @@ module qdma_subsystem_function #(
       .aclk             (axis_aclk),
       .aresetn          (axil_aresetn)
     );
+
+    assign axis_c2h_tuser_size   = c2h_slice_tuser_out[15:0];
+    assign axis_c2h_tuser_ptp_ts = c2h_slice_tuser_out[95:16];
   end
   else begin
     qdma_subsystem_clk_converter c2h_axis_inst(
@@ -306,6 +329,18 @@ module qdma_subsystem_function #(
       .m_axis_tlast   (axis_c2h_tlast),
       .m_axis_tuser   (axis_c2h_tuser_size)
     );
+
+    // For the clock converter path, the timestamp is stable across the
+    // entire packet so latching it on the post-converter beat is safe.
+    // Re-latch on every valid beat so it is current at tlast.
+    reg [79:0] ptp_ts_cc_latched;
+    always @(posedge axis_aclk) begin
+      if (~axil_aresetn)
+        ptp_ts_cc_latched <= 80'd0;
+      else if (axis_c2h_tvalid && axis_c2h_tready)
+        ptp_ts_cc_latched <= s_axis_c2h_tuser_ptp_ts;
+    end
+    assign axis_c2h_tuser_ptp_ts = ptp_ts_cc_latched;
   end
   endgenerate
 
@@ -431,11 +466,77 @@ module qdma_subsystem_function #(
     .s_aresetn          (axil_aresetn)
   );
 
-  assign m_axis_c2h_tvalid     = axis_c2h_buf_tvalid && ~qid_fifo_empty;
-  assign m_axis_c2h_tdata      = axis_c2h_buf_tdata;
-  assign m_axis_c2h_tlast      = axis_c2h_buf_tlast;
-  assign m_axis_c2h_tuser_size = axis_c2h_buf_tuser_size;
-  assign m_axis_c2h_tuser_qid  = qid_fifo_dout;
-  assign axis_c2h_buf_tready   = m_axis_c2h_tready && ~qid_fifo_empty;
+  // ==========
+  // PTP timestamp sideband FIFO (C2H / RX path)
+  // ==========
+  //
+  // The input ptp_ts is provided by the upstream packet_adapter_rx and is stable
+  // for the duration of the packet.  We latch it on the post-slice/post-converter
+  // tlast beat so that:
+  //   1) we are in the axis_aclk domain regardless of QDMA_ID, and
+  //   2) the write enable aligns exactly with the packet buffer FIFO write.
+  //
+  // The FIFO stores one 80-bit timestamp per packet and is read when the output
+  // packet completes (same read-enable as qid_fifo).
+
+  // For QDMA_ID == 0, the PTP timestamp now comes through the widened register
+  // slice (axis_c2h_tuser_ptp_ts) so it is properly aligned with post-slice
+  // timing.  For QDMA_ID != 0, the timestamp is stable across the entire
+  // packet so sampling it via the clock converter output is safe.
+
+  // Write one entry per packet, on the tlast beat after the register slice /
+  // clock converter -- the same signals that drive the buf_fifo_inst write side.
+  assign ptp_ts_fifo_wr_en = axis_c2h_tvalid && axis_c2h_tlast && axis_c2h_tready;
+
+  // Read one entry per packet on the output side (matches qid_fifo_rd_en).
+  assign ptp_ts_fifo_rd_en = m_axis_c2h_tvalid && m_axis_c2h_tlast && m_axis_c2h_tready;
+
+  xpm_fifo_sync #(
+    .DOUT_RESET_VALUE    ("0"),
+    .ECC_MODE            ("no_ecc"),
+    .FIFO_MEMORY_TYPE    ("block"),
+    .FIFO_WRITE_DEPTH    (C_PKT_FIFO_DEPTH),
+    .READ_DATA_WIDTH     (80),
+    .READ_MODE           ("fwft"),
+    .WRITE_DATA_WIDTH    (80)
+  ) ptp_ts_fifo_inst (
+    .wr_en         (ptp_ts_fifo_wr_en),
+    .din           (axis_c2h_tuser_ptp_ts),  // Post-slice timestamp, aligned with write enable timing
+    .wr_ack        (),
+    .rd_en         (ptp_ts_fifo_rd_en),
+    .data_valid    (),
+    .dout          (ptp_ts_fifo_dout),
+
+    .wr_data_count (),
+    .rd_data_count (),
+
+    .empty         (ptp_ts_fifo_empty),
+    .full          (ptp_ts_fifo_full),
+    .almost_empty  (),
+    .almost_full   (),
+    .overflow      (),
+    .underflow     (),
+    .prog_empty    (),
+    .prog_full     (),
+    .sleep         (1'b0),
+
+    .sbiterr       (),
+    .dbiterr       (),
+    .injectsbiterr (1'b0),
+    .injectdbiterr (1'b0),
+
+    .wr_clk        (axis_aclk),
+    .rst           (~axil_aresetn),
+    .rd_rst_busy   (),
+    .wr_rst_busy   ()
+  );
+
+  assign m_axis_c2h_tvalid      = axis_c2h_buf_tvalid && ~qid_fifo_empty;
+  assign m_axis_c2h_tdata       = axis_c2h_buf_tdata;
+  assign m_axis_c2h_tlast       = axis_c2h_buf_tlast;
+  assign m_axis_c2h_tuser_size  = axis_c2h_buf_tuser_size;
+  assign m_axis_c2h_tuser_qid   = qid_fifo_dout;
+  assign m_axis_c2h_tuser_ptp_ts = ptp_ts_fifo_dout;
+  assign axis_c2h_buf_tready    = m_axis_c2h_tready && ~qid_fifo_empty;
 
 endmodule: qdma_subsystem_function

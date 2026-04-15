@@ -49,6 +49,7 @@ module qdma_subsystem #(
   output  [16*NUM_PHYS_FUNC-1:0] m_axis_h2c_tuser_size,
   output  [16*NUM_PHYS_FUNC-1:0] m_axis_h2c_tuser_src,
   output  [16*NUM_PHYS_FUNC-1:0] m_axis_h2c_tuser_dst,
+  output  [16*NUM_PHYS_FUNC-1:0] m_axis_h2c_tuser_ptp_tag,
   input      [NUM_PHYS_FUNC-1:0] m_axis_h2c_tready,
 
   input      [NUM_PHYS_FUNC-1:0] s_axis_c2h_tvalid,
@@ -58,6 +59,7 @@ module qdma_subsystem #(
   input   [16*NUM_PHYS_FUNC-1:0] s_axis_c2h_tuser_size,
   input   [16*NUM_PHYS_FUNC-1:0] s_axis_c2h_tuser_src,
   input   [16*NUM_PHYS_FUNC-1:0] s_axis_c2h_tuser_dst,
+  input   [80*NUM_PHYS_FUNC-1:0] s_axis_c2h_tuser_ptp_ts,
   output     [NUM_PHYS_FUNC-1:0] s_axis_c2h_tready,
 
 `ifdef __synthesis__
@@ -590,8 +592,9 @@ module qdma_subsystem #(
     assign m_axis_h2c_tlast      = 1'b0;
     assign m_axis_h2c_tuser_size = 0;
     assign m_axis_h2c_tuser_src  = 0;
-    assign m_axis_h2c_tuser_dst  = 0;
-    assign m_axis_h2c_tuser_user = 0;
+    assign m_axis_h2c_tuser_dst     = 0;
+    assign m_axis_h2c_tuser_ptp_tag = 0;
+    assign m_axis_h2c_tuser_user    = 0;
 
     assign s_axis_c2h_tready     = 1'b1;
   end
@@ -635,6 +638,7 @@ module qdma_subsystem #(
     wire     [NUM_PHYS_FUNC-1:0] axis_h2c_tlast;
     wire  [16*NUM_PHYS_FUNC-1:0] axis_h2c_tuser_size;
     wire  [11*NUM_PHYS_FUNC-1:0] axis_h2c_tuser_qid;
+    wire  [16*NUM_PHYS_FUNC-1:0] axis_h2c_tuser_ptp_tag;
     wire     [NUM_PHYS_FUNC-1:0] axis_h2c_tready;
 
     wire                         h2c_status_valid;
@@ -646,6 +650,7 @@ module qdma_subsystem #(
     wire     [NUM_PHYS_FUNC-1:0] axis_c2h_tlast;
     wire  [16*NUM_PHYS_FUNC-1:0] axis_c2h_tuser_size;
     wire  [11*NUM_PHYS_FUNC-1:0] axis_c2h_tuser_qid;
+    wire  [80*NUM_PHYS_FUNC-1:0] axis_c2h_tuser_ptp_ts;
     wire     [NUM_PHYS_FUNC-1:0] axis_c2h_tready;
 
     wire                         c2h_status_valid;
@@ -753,6 +758,7 @@ module qdma_subsystem #(
       .m_axis_h2c_tlast                (axis_h2c_tlast),
       .m_axis_h2c_tuser_size           (axis_h2c_tuser_size),
       .m_axis_h2c_tuser_qid            (axis_h2c_tuser_qid),
+      .m_axis_h2c_tuser_ptp_tag        (axis_h2c_tuser_ptp_tag),
       .m_axis_h2c_tready               (axis_h2c_tready),
 
       .h2c_status_valid                (h2c_status_valid),
@@ -771,6 +777,7 @@ module qdma_subsystem #(
       .s_axis_c2h_tlast                     (axis_c2h_tlast),
       .s_axis_c2h_tuser_size                (axis_c2h_tuser_size),
       .s_axis_c2h_tuser_qid                 (axis_c2h_tuser_qid),
+      .s_axis_c2h_tuser_ptp_ts              (axis_c2h_tuser_ptp_ts),
       .s_axis_c2h_tready                    (axis_c2h_tready),
 
       .m_axis_qdma_c2h_tvalid               (axis_qdma_c2h_tvalid),
@@ -838,6 +845,7 @@ module qdma_subsystem #(
         .s_axis_h2c_tlast      (axis_h2c_tlast[i]),
         .s_axis_h2c_tuser_size (axis_h2c_tuser_size[`getvec(16, i)]),
         .s_axis_h2c_tuser_qid  (axis_h2c_tuser_qid[`getvec(11, i)]),
+        .s_axis_h2c_tuser_ptp_tag (axis_h2c_tuser_ptp_tag[`getvec(16, i)]),
         .s_axis_h2c_tready     (axis_h2c_tready[i]),
 
         .m_axis_h2c_tvalid     (m_axis_h2c_tvalid[i]),
@@ -847,6 +855,7 @@ module qdma_subsystem #(
         .m_axis_h2c_tuser_size (m_axis_h2c_tuser_size[`getvec(16, i)]),
         .m_axis_h2c_tuser_src  (m_axis_h2c_tuser_src[`getvec(16, i)]),
         .m_axis_h2c_tuser_dst  (m_axis_h2c_tuser_dst[`getvec(16, i)]),
+        .m_axis_h2c_tuser_ptp_tag (m_axis_h2c_tuser_ptp_tag[`getvec(16, i)]),
         .m_axis_h2c_tready     (m_axis_h2c_tready[i]),
 
         .s_axis_c2h_tvalid     (s_axis_c2h_tvalid[i]),
@@ -856,6 +865,7 @@ module qdma_subsystem #(
         .s_axis_c2h_tuser_size (s_axis_c2h_tuser_size[`getvec(16, i)]),
         .s_axis_c2h_tuser_src  (s_axis_c2h_tuser_src[`getvec(16, i)]),
         .s_axis_c2h_tuser_dst  (s_axis_c2h_tuser_dst[`getvec(16, i)]),
+        .s_axis_c2h_tuser_ptp_ts (s_axis_c2h_tuser_ptp_ts[`getvec(80, i)]),
         .s_axis_c2h_tready     (s_axis_c2h_tready[i]),
 
         .m_axis_c2h_tvalid     (axis_c2h_tvalid[i]),
@@ -863,6 +873,7 @@ module qdma_subsystem #(
         .m_axis_c2h_tlast      (axis_c2h_tlast[i]),
         .m_axis_c2h_tuser_size (axis_c2h_tuser_size[`getvec(16, i)]),
         .m_axis_c2h_tuser_qid  (axis_c2h_tuser_qid[`getvec(11, i)]),
+        .m_axis_c2h_tuser_ptp_ts (axis_c2h_tuser_ptp_ts[`getvec(80, i)]),
         .m_axis_c2h_tready     (axis_c2h_tready[i]),
 
         .axil_aclk             (axil_cfg_aclk),

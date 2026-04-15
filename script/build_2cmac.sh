@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build OpenNIC shell: 2 CMACs, 2 PFs (one PF per CMAC), 2048 queues, 9600-byte max packet
+# Build OpenNIC shell: 2 CMACs, 2 PFs (one PF per CMAC), 2048 queues, 4096-byte max packet
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

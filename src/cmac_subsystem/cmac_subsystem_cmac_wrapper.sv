@@ -67,13 +67,18 @@ module cmac_subsystem_cmac_wrapper #(
   input          cmac_sys_reset,
 
   // PTP timestamp interface
-  input  wire [79:0] ptp_time,            // Current PTP time from PTP subsystem (cmac_clk domain)
+  input  wire [79:0] ptp_time,            // Current PTP time (cmac_clk domain, for TX)
+  input  wire [79:0] ptp_time_rx,         // Current PTP time (rx_serdes_clk domain, for RX)
   output wire [79:0] tx_ptp_ts,           // TX timestamp return from CMAC
   output wire [15:0] tx_ptp_ts_tag,       // TX tag return from CMAC
   output wire        tx_ptp_ts_valid,     // TX timestamp valid
   output wire [79:0] rx_ptp_ts,           // RX timestamp from CMAC
+  output wire  [4:0] rx_ptp_pcslane,      // RX PCS lane of SOP
+  output wire [139:0] rx_lane_aligner_fill, // Per-PCS-lane fill levels [lane*7 +: 7]
   input  wire [15:0] tx_ptp_tag_in,       // TX tag input for tagging packets
   input  wire  [1:0] tx_ptp_1588op_in,    // TX PTP operation mode (2'b10 = 2-step)
+
+  output wire        rx_serdes_clk0,      // RX SerDes lane 0 clock (for PTP RX CDC)
 
   input          axil_aclk
 );
@@ -90,6 +95,21 @@ module cmac_subsystem_cmac_wrapper #(
   wire        ctl_tx_resend_pause;
 
   wire        txusrclk2;
+
+  // RX SerDes clock: gt_rxusrclk2 is the GT recovered RX clock.
+  // Internally in the CMAC IP: rx_serdes_clk[0] = gt_rxusrclk2.
+  // gt_rxusrclk2 is exposed as a port; rx_serdes_clk is internal-only.
+  wire gt_rxusrclk2_int;
+  assign rx_serdes_clk0 = gt_rxusrclk2_int;
+
+  // Per-PCS-lane aligner fill levels from CMAC IP (7 bits per lane per IP)
+  wire [6:0] rx_lane_aligner_fill_w [0:19];
+  genvar lf;
+  generate
+    for (lf = 0; lf < 20; lf = lf + 1) begin : gen_fill_pack
+      assign rx_lane_aligner_fill[lf*7 +: 7] = rx_lane_aligner_fill_w[lf];
+    end
+  endgenerate
 
   wire [55:0] rx_preambleout;
   wire        tx_ovfout;
@@ -380,7 +400,7 @@ module cmac_subsystem_cmac_wrapper #(
 `endif
       .gt_ref_clk_out                      (),
       .gt_rxrecclkout                      (),
-      .gt_rxusrclk2                        (),
+      .gt_rxusrclk2                        (gt_rxusrclk2_int),
       .rx_clk                              (txusrclk2),
       .gt_txusrclk2                        (txusrclk2),
 
@@ -437,13 +457,36 @@ module cmac_subsystem_cmac_wrapper #(
 
       // PTP timestamping
       .ctl_tx_systemtimerin                (ptp_time),
-      .ctl_rx_systemtimerin                (ptp_time),
+      .ctl_rx_systemtimerin                (ptp_time_rx),
       .tx_ptp_1588op_in                    (tx_ptp_1588op_in),
       .tx_ptp_tag_field_in                 (tx_ptp_tag_in),
       .tx_ptp_tstamp_out                   (tx_ptp_ts),
       .tx_ptp_tstamp_tag_out               (tx_ptp_ts_tag),
       .tx_ptp_tstamp_valid_out             (tx_ptp_ts_valid),
       .rx_ptp_tstamp_out                   (rx_ptp_ts),
+      .rx_ptp_pcslane_out                  (rx_ptp_pcslane),
+
+      // RX lane aligner fill levels for PTP lane skew compensation
+      .rx_lane_aligner_fill_0              (rx_lane_aligner_fill_w[0]),
+      .rx_lane_aligner_fill_1              (rx_lane_aligner_fill_w[1]),
+      .rx_lane_aligner_fill_2              (rx_lane_aligner_fill_w[2]),
+      .rx_lane_aligner_fill_3              (rx_lane_aligner_fill_w[3]),
+      .rx_lane_aligner_fill_4              (rx_lane_aligner_fill_w[4]),
+      .rx_lane_aligner_fill_5              (rx_lane_aligner_fill_w[5]),
+      .rx_lane_aligner_fill_6              (rx_lane_aligner_fill_w[6]),
+      .rx_lane_aligner_fill_7              (rx_lane_aligner_fill_w[7]),
+      .rx_lane_aligner_fill_8              (rx_lane_aligner_fill_w[8]),
+      .rx_lane_aligner_fill_9              (rx_lane_aligner_fill_w[9]),
+      .rx_lane_aligner_fill_10             (rx_lane_aligner_fill_w[10]),
+      .rx_lane_aligner_fill_11             (rx_lane_aligner_fill_w[11]),
+      .rx_lane_aligner_fill_12             (rx_lane_aligner_fill_w[12]),
+      .rx_lane_aligner_fill_13             (rx_lane_aligner_fill_w[13]),
+      .rx_lane_aligner_fill_14             (rx_lane_aligner_fill_w[14]),
+      .rx_lane_aligner_fill_15             (rx_lane_aligner_fill_w[15]),
+      .rx_lane_aligner_fill_16             (rx_lane_aligner_fill_w[16]),
+      .rx_lane_aligner_fill_17             (rx_lane_aligner_fill_w[17]),
+      .rx_lane_aligner_fill_18             (rx_lane_aligner_fill_w[18]),
+      .rx_lane_aligner_fill_19             (rx_lane_aligner_fill_w[19]),
 
       .rx_otn_bip8_0                       (rx_otn_bip8_0),
       .rx_otn_bip8_1                       (rx_otn_bip8_1),
@@ -681,7 +724,7 @@ module cmac_subsystem_cmac_wrapper #(
       .gt_ref_clk_n                        (gt_refclk_n),
       .gt_ref_clk_out                      (),
       .gt_rxrecclkout                      (),
-      .gt_rxusrclk2                        (),
+      .gt_rxusrclk2                        (gt_rxusrclk2_int),
       .rx_clk                              (txusrclk2),
       .gt_txusrclk2                        (txusrclk2),
 
@@ -738,13 +781,36 @@ module cmac_subsystem_cmac_wrapper #(
 
       // PTP timestamping
       .ctl_tx_systemtimerin                (ptp_time),
-      .ctl_rx_systemtimerin                (ptp_time),
+      .ctl_rx_systemtimerin                (ptp_time_rx),
       .tx_ptp_1588op_in                    (tx_ptp_1588op_in),
       .tx_ptp_tag_field_in                 (tx_ptp_tag_in),
       .tx_ptp_tstamp_out                   (tx_ptp_ts),
       .tx_ptp_tstamp_tag_out               (tx_ptp_ts_tag),
       .tx_ptp_tstamp_valid_out             (tx_ptp_ts_valid),
       .rx_ptp_tstamp_out                   (rx_ptp_ts),
+      .rx_ptp_pcslane_out                  (rx_ptp_pcslane),
+
+      // RX lane aligner fill levels for PTP lane skew compensation
+      .rx_lane_aligner_fill_0              (rx_lane_aligner_fill_w[0]),
+      .rx_lane_aligner_fill_1              (rx_lane_aligner_fill_w[1]),
+      .rx_lane_aligner_fill_2              (rx_lane_aligner_fill_w[2]),
+      .rx_lane_aligner_fill_3              (rx_lane_aligner_fill_w[3]),
+      .rx_lane_aligner_fill_4              (rx_lane_aligner_fill_w[4]),
+      .rx_lane_aligner_fill_5              (rx_lane_aligner_fill_w[5]),
+      .rx_lane_aligner_fill_6              (rx_lane_aligner_fill_w[6]),
+      .rx_lane_aligner_fill_7              (rx_lane_aligner_fill_w[7]),
+      .rx_lane_aligner_fill_8              (rx_lane_aligner_fill_w[8]),
+      .rx_lane_aligner_fill_9              (rx_lane_aligner_fill_w[9]),
+      .rx_lane_aligner_fill_10             (rx_lane_aligner_fill_w[10]),
+      .rx_lane_aligner_fill_11             (rx_lane_aligner_fill_w[11]),
+      .rx_lane_aligner_fill_12             (rx_lane_aligner_fill_w[12]),
+      .rx_lane_aligner_fill_13             (rx_lane_aligner_fill_w[13]),
+      .rx_lane_aligner_fill_14             (rx_lane_aligner_fill_w[14]),
+      .rx_lane_aligner_fill_15             (rx_lane_aligner_fill_w[15]),
+      .rx_lane_aligner_fill_16             (rx_lane_aligner_fill_w[16]),
+      .rx_lane_aligner_fill_17             (rx_lane_aligner_fill_w[17]),
+      .rx_lane_aligner_fill_18             (rx_lane_aligner_fill_w[18]),
+      .rx_lane_aligner_fill_19             (rx_lane_aligner_fill_w[19]),
 
       .rx_otn_bip8_0                       (rx_otn_bip8_0),
       .rx_otn_bip8_1                       (rx_otn_bip8_1),

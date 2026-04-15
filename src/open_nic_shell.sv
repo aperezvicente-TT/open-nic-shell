@@ -435,13 +435,13 @@ module open_nic_shell #(
   wire  [80*NUM_CMAC_PORT-1:0] axis_cmac_rx_tuser_ptp_ts;
 
   // PTP subsystem signals
-  wire  [80*NUM_CMAC_PORT-1:0] ptp_time_cmac;        // 80-bit PTP time per port (cmac_clk domain)
+  wire  [80*NUM_CMAC_PORT-1:0] ptp_time_cmac;        // 80-bit PTP time per port (cmac_clk domain, TX)
+  wire  [80*NUM_CMAC_PORT-1:0] ptp_time_cmac_rx;     // 80-bit PTP time per port (rx_serdes_clk domain, RX)
   wire     [NUM_CMAC_PORT-1:0] ptp_tx_ts_valid;      // TX timestamp return valid per port
   wire  [80*NUM_CMAC_PORT-1:0] ptp_tx_ts;            // TX timestamp return per port
   wire  [16*NUM_CMAC_PORT-1:0] ptp_tx_ts_tag;        // TX timestamp tag per port
+  wire     [NUM_CMAC_PORT-1:0] rx_serdes_clk;        // RX SerDes lane 0 clock per port
 
-  // QDMA subsystem does not carry PTP tags; tie to 0 for now
-  assign axis_qdma_h2c_tuser_ptp_tag = {16*NUM_PHYS_FUNC*NUM_QDMA{1'b0}};
 
   wire     [NUM_CMAC_PORT-1:0] cmac_link_up;
 
@@ -762,6 +762,7 @@ module open_nic_shell #(
       .m_axis_h2c_tuser_size                (axis_qdma_h2c_tuser_size[`getvec(16*NUM_PHYS_FUNC, i)]),
       .m_axis_h2c_tuser_src                 (axis_qdma_h2c_tuser_src[`getvec(16*NUM_PHYS_FUNC, i)]),
       .m_axis_h2c_tuser_dst                 (axis_qdma_h2c_tuser_dst[`getvec(16*NUM_PHYS_FUNC, i)]),
+      .m_axis_h2c_tuser_ptp_tag             (axis_qdma_h2c_tuser_ptp_tag[`getvec(16*NUM_PHYS_FUNC, i)]),
       .m_axis_h2c_tready                    (axis_qdma_h2c_tready[`getvec(NUM_PHYS_FUNC, i)]),
 
       .s_axis_c2h_tvalid                    (axis_qdma_c2h_tvalid[`getvec(NUM_PHYS_FUNC, i)]),
@@ -771,6 +772,7 @@ module open_nic_shell #(
       .s_axis_c2h_tuser_size                (axis_qdma_c2h_tuser_size[`getvec(16*NUM_PHYS_FUNC, i)]),
       .s_axis_c2h_tuser_src                 (axis_qdma_c2h_tuser_src[`getvec(16*NUM_PHYS_FUNC, i)]),
       .s_axis_c2h_tuser_dst                 (axis_qdma_c2h_tuser_dst[`getvec(16*NUM_PHYS_FUNC, i)]),
+      .s_axis_c2h_tuser_ptp_ts              (axis_qdma_c2h_tuser_ptp_ts[`getvec(80*NUM_PHYS_FUNC, i)]),
       .s_axis_c2h_tready                    (axis_qdma_c2h_tready[`getvec(NUM_PHYS_FUNC, i)]),
 
   `ifdef __synthesis__
@@ -974,9 +976,11 @@ module open_nic_shell #(
       .m_axis_cmac_rx_tuser_ptp_ts  (axis_cmac_rx_tuser_ptp_ts[`getvec(80, i)]),
 
       .ptp_time                     (ptp_time_cmac[`getvec(80, i)]),
+      .ptp_time_rx                  (ptp_time_cmac_rx[`getvec(80, i)]),
       .tx_ptp_ts                    (ptp_tx_ts[`getvec(80, i)]),
       .tx_ptp_ts_tag                (ptp_tx_ts_tag[`getvec(16, i)]),
       .tx_ptp_ts_valid              (ptp_tx_ts_valid[i]),
+      .rx_serdes_clk0               (rx_serdes_clk[i]),
 
 `ifdef __synthesis__
       .gt_rxp                       (qsfp_rxp[`getvec(4, i)]),
@@ -1229,6 +1233,7 @@ module open_nic_shell #(
     .s_axil_rready   (axil_ptp_rready),
 
     .ptp_time_cmac   (ptp_time_cmac),
+    .ptp_time_cmac_rx(ptp_time_cmac_rx),
 
     .tx_ptp_ts_valid (ptp_tx_ts_valid),
     .tx_ptp_ts       (ptp_tx_ts),
@@ -1239,6 +1244,7 @@ module open_nic_shell #(
     .axis_aclk       (axis_aclk[0]),
     .axis_aresetn    (sys_cfg_powerup_rstn),
     .cmac_clk        (cmac_clk),
+    .rx_serdes_clk   (rx_serdes_clk),
 
     .mod_rstn        (1'b1),
     .mod_rst_done    ()

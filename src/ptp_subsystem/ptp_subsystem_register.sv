@@ -27,7 +27,7 @@
 // -----------------------------------------------------------------------------
 //  Address | Mode |  Description
 // -----------------------------------------------------------------------------
-//  0x000   |  RW  |  CTRL - [0]=enable, [1]=adj_active(RO), [31:16]=version(RO)
+//  0x000   |  RW  |  CTRL - [0]=enable, [1]=adj_active(RO), [11:8]=cdc_locked(RO), [31:16]=version(RO)
 //  0x010   |  RO  |  TS_S_LO  - seconds[31:0] (read triggers atomic snapshot)
 //  0x014   |  RO  |  TS_S_HI  - seconds[47:32]
 //  0x018   |  RO  |  TS_NS    - nanoseconds[29:0]
@@ -103,6 +103,9 @@ module ptp_subsystem_register #(
   input  [80*NUM_CMAC_PORT-1:0]     tx_ts_data,
   input  [16*NUM_CMAC_PORT-1:0]     tx_ts_tag,
   output [NUM_CMAC_PORT-1:0]        tx_ts_pop,
+
+  // CDC locked status: [0]=port0_tx, [1]=port0_rx, [2]=port1_tx, [3]=port1_rx
+  input  [3:0]                       cdc_locked,
 
   // Clocks
   input axil_aclk,
@@ -376,7 +379,8 @@ module ptp_subsystem_register #(
       case (reg_addr)
         // ---- Global PTP registers ----
         REG_CTRL: begin
-          reg_dout <= {VERSION, 14'd0, adj_active, reg_enable};
+          // [31:16]=version, [11:8]=cdc_locked, [1]=adj_active, [0]=enable
+          reg_dout <= {VERSION, 4'd0, cdc_locked, 6'd0, adj_active, reg_enable};
         end
         REG_TS_S_LO: begin
           // Return seconds[31:0] from live time (snapshot captured above)

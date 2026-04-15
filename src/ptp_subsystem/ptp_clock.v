@@ -234,8 +234,8 @@ always @(posedge clk) begin
 
     // timestamp increment calculation
     {ts_inc_ns_reg, ts_inc_fns_reg} <= $signed({1'b0, period_ns_reg, period_fns_reg}) +
-        (adj_active_reg ? $signed({adj_ns_reg, adj_fns_reg}) : 0) +
-        ((DRIFT_ENABLE && drift_cnt == 0) ? $signed({drift_ns_reg, drift_fns_reg}) : 0);
+        (adj_active_reg ? $signed({adj_ns_reg, adj_fns_reg}) : $signed(0)) +
+        ((DRIFT_ENABLE && drift_cnt == 0) ? $signed({drift_ns_reg, drift_fns_reg}) : $signed(0));
 
     // offset adjust counter
     if (adj_count_reg > 0) begin

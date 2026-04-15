@@ -137,11 +137,33 @@ module packet_adapter_tx #(
     end
   end
 
-  assign tx_pkt_sent = axis_tx_tvalid && axis_tx_tlast && axis_tx_tready && ~dropping;
+  assign tx_pkt_sent = axis_tx_tvalid && axis_tx_tlast && axis_tx_tready && ~dropping && fifos_ready;
   assign tx_pkt_drop = axis_tx_tvalid && axis_tx_tlast && axis_tx_tready && dropping;
   assign tx_bytes    = axis_tx_tuser_size;
 
   assign m_axis_tx_tuser_err = 1'b0;
+
+  // Internal signals from packet FIFO (322MHz domain)
+  wire        raw_tx_tvalid;
+  wire        raw_tx_tready;
+  wire        ptp_tag_fifo_empty;
+  wire        ptp_tag_fifo_wr_rst_busy;
+
+  // Gate the 250MHz data path until the tag FIFO's write side is out of reset.
+  // xpm_fifo_axis (data) and xpm_fifo_async (tag) have different internal
+  // reset recovery times.  If the data FIFO becomes ready first, the first
+  // packet enters without a tag write → permanent 1-entry count mismatch that
+  // shifts every subsequent tag by one position.
+  wire        fifos_ready = ~ptp_tag_fifo_wr_rst_busy;
+
+  // Gate packet output: hold off until the PTP tag sideband FIFO has crossed
+  // the CDC.  Both FIFOs are written at the same 250MHz-side event (tx_pkt_sent
+  // / tlast), but the packet FIFO's store-and-forward release can beat the tag
+  // FIFO's async CDC by 1-2 cmac_clk cycles.  Without this gate the CMAC sees
+  // tag=0 on the first beat and skips the TX timestamp capture.
+  wire        tag_ready = ~ptp_tag_fifo_empty;
+  assign m_axis_tx_tvalid = raw_tx_tvalid && tag_ready;
+  assign raw_tx_tready    = m_axis_tx_tready && tag_ready;
 
   axi_stream_packet_fifo #(
     .CDC_SYNC_STAGES  (2),
@@ -152,7 +174,7 @@ module packet_adapter_tx #(
     .RELATED_CLOCKS   (0),
     .TDATA_WIDTH      (512)
   ) tx_cdc_fifo_inst (
-    .s_axis_tvalid      (axis_tx_tvalid && ~dropping),
+    .s_axis_tvalid      (axis_tx_tvalid && ~dropping && fifos_ready),
     .s_axis_tdata       (axis_tx_tdata),
     .s_axis_tkeep       (axis_tx_tkeep),
     .s_axis_tstrb       ({64{1'b1}}),
@@ -162,7 +184,7 @@ module packet_adapter_tx #(
     .s_axis_tdest       (0),
     .s_axis_tready      (axis_tx_tready),
 
-    .m_axis_tvalid      (m_axis_tx_tvalid),
+    .m_axis_tvalid      (raw_tx_tvalid),
     .m_axis_tdata       (m_axis_tx_tdata),
     .m_axis_tkeep       (m_axis_tx_tkeep),
     .m_axis_tstrb       (),
@@ -170,7 +192,7 @@ module packet_adapter_tx #(
     .m_axis_tuser       (),
     .m_axis_tid         (),
     .m_axis_tdest       (),
-    .m_axis_tready      (m_axis_tx_tready),
+    .m_axis_tready      (raw_tx_tready),
 
     .almost_empty_axis  (),
     .prog_empty_axis    (),
@@ -223,6 +245,14 @@ module packet_adapter_tx #(
   // Write to sideband FIFO on packet completion, only for non-dropped packets
   assign tx_ptp_tag_fifo_wr_en = tx_pkt_sent;
 
+  // For single-beat packets (e.g. 60-byte PTP Delay Request), tx_pkt_sent fires
+  // on the same cycle the tag register captures — so the register still holds
+  // the OLD value.  Use the combinational tag directly for first/only beats
+  // (tx_ptp_tag_in_packet==0) and the registered tag for multi-beat packets.
+  wire [15:0] tx_ptp_tag_fifo_din = tx_ptp_tag_in_packet
+                                  ? tx_ptp_tag_captured
+                                  : axis_tx_tuser_ptp_tag;
+
   xpm_fifo_async #(
     .WRITE_DATA_WIDTH  (16),
     .READ_DATA_WIDTH   (16),
@@ -238,12 +268,12 @@ module packet_adapter_tx #(
     .rd_clk        (cmac_clk),
     .rst           (~axil_aresetn),
     .wr_en         (tx_ptp_tag_fifo_wr_en),
-    .din           (tx_ptp_tag_captured),
-    .rd_en         (m_axis_tx_tvalid && m_axis_tx_tready && m_axis_tx_tlast),
+    .din           (tx_ptp_tag_fifo_din),
+    .rd_en         (raw_tx_tvalid && raw_tx_tready && m_axis_tx_tlast),
     .dout          (tx_ptp_tag_fifo_dout),
     .wr_ack        (),
     .data_valid    (),
-    .empty         (),
+    .empty         (ptp_tag_fifo_empty),
     .full          (),
     .almost_empty  (),
     .almost_full   (),
@@ -259,7 +289,7 @@ module packet_adapter_tx #(
     .injectsbiterr (1'b0),
     .injectdbiterr (1'b0),
     .rd_rst_busy   (),
-    .wr_rst_busy   ()
+    .wr_rst_busy   (ptp_tag_fifo_wr_rst_busy)
   );
 
   // 322MHz side: output PTP tag from sideband FIFO (FWFT mode - always valid)
