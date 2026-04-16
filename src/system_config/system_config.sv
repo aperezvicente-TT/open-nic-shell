@@ -106,6 +106,44 @@ module system_config #(
   input                   [1:0] m_axil_ptp_rresp,
   output                        m_axil_ptp_rready,
 
+`ifdef __rdma_enabled__
+  output                        m_axil_rdma_awvalid,
+  output                 [31:0] m_axil_rdma_awaddr,
+  input                         m_axil_rdma_awready,
+  output                        m_axil_rdma_wvalid,
+  output                 [31:0] m_axil_rdma_wdata,
+  output                  [3:0] m_axil_rdma_wstrb,
+  input                         m_axil_rdma_wready,
+  input                         m_axil_rdma_bvalid,
+  input                   [1:0] m_axil_rdma_bresp,
+  output                        m_axil_rdma_bready,
+  output                        m_axil_rdma_arvalid,
+  output                 [31:0] m_axil_rdma_araddr,
+  input                         m_axil_rdma_arready,
+  input                         m_axil_rdma_rvalid,
+  input                  [31:0] m_axil_rdma_rdata,
+  input                   [1:0] m_axil_rdma_rresp,
+  output                        m_axil_rdma_rready,
+
+  output                        m_axil_rdma_1_awvalid,
+  output                 [31:0] m_axil_rdma_1_awaddr,
+  input                         m_axil_rdma_1_awready,
+  output                        m_axil_rdma_1_wvalid,
+  output                 [31:0] m_axil_rdma_1_wdata,
+  output                  [3:0] m_axil_rdma_1_wstrb,
+  input                         m_axil_rdma_1_wready,
+  input                         m_axil_rdma_1_bvalid,
+  input                   [1:0] m_axil_rdma_1_bresp,
+  output                        m_axil_rdma_1_bready,
+  output                        m_axil_rdma_1_arvalid,
+  output                 [31:0] m_axil_rdma_1_araddr,
+  input                         m_axil_rdma_1_arready,
+  input                         m_axil_rdma_1_rvalid,
+  input                  [31:0] m_axil_rdma_1_rdata,
+  input                   [1:0] m_axil_rdma_1_rresp,
+  output                        m_axil_rdma_1_rready,
+`endif
+
   output                        m_axil_box0_awvalid,
   output                 [31:0] m_axil_box0_awaddr,
   input                         m_axil_box0_awready,
@@ -187,6 +225,8 @@ module system_config #(
   output                  [1:0] qsfp_modsell,
 `elsif __au45n__
   input                   [1:0] satellite_gpio_0,
+`elsif __xup_vv8__
+  input                   [3:0] satellite_gpio_0,
 `endif
 
   input          [NUM_QDMA-1:0] aclk,
@@ -514,6 +554,44 @@ module system_config #(
     .m_axil_ptp_rresp    (m_axil_ptp_rresp),
     .m_axil_ptp_rready   (m_axil_ptp_rready),
 
+`ifdef __rdma_enabled__
+    .m_axil_rdma_awvalid   (m_axil_rdma_awvalid),
+    .m_axil_rdma_awaddr    (m_axil_rdma_awaddr),
+    .m_axil_rdma_awready   (m_axil_rdma_awready),
+    .m_axil_rdma_wvalid    (m_axil_rdma_wvalid),
+    .m_axil_rdma_wdata     (m_axil_rdma_wdata),
+    .m_axil_rdma_wstrb     (m_axil_rdma_wstrb),
+    .m_axil_rdma_wready    (m_axil_rdma_wready),
+    .m_axil_rdma_bvalid    (m_axil_rdma_bvalid),
+    .m_axil_rdma_bresp     (m_axil_rdma_bresp),
+    .m_axil_rdma_bready    (m_axil_rdma_bready),
+    .m_axil_rdma_arvalid   (m_axil_rdma_arvalid),
+    .m_axil_rdma_araddr    (m_axil_rdma_araddr),
+    .m_axil_rdma_arready   (m_axil_rdma_arready),
+    .m_axil_rdma_rvalid    (m_axil_rdma_rvalid),
+    .m_axil_rdma_rdata     (m_axil_rdma_rdata),
+    .m_axil_rdma_rresp     (m_axil_rdma_rresp),
+    .m_axil_rdma_rready    (m_axil_rdma_rready),
+
+    .m_axil_rdma_1_awvalid (m_axil_rdma_1_awvalid),
+    .m_axil_rdma_1_awaddr  (m_axil_rdma_1_awaddr),
+    .m_axil_rdma_1_awready (m_axil_rdma_1_awready),
+    .m_axil_rdma_1_wvalid  (m_axil_rdma_1_wvalid),
+    .m_axil_rdma_1_wdata   (m_axil_rdma_1_wdata),
+    .m_axil_rdma_1_wstrb   (m_axil_rdma_1_wstrb),
+    .m_axil_rdma_1_wready  (m_axil_rdma_1_wready),
+    .m_axil_rdma_1_bvalid  (m_axil_rdma_1_bvalid),
+    .m_axil_rdma_1_bresp   (m_axil_rdma_1_bresp),
+    .m_axil_rdma_1_bready  (m_axil_rdma_1_bready),
+    .m_axil_rdma_1_arvalid (m_axil_rdma_1_arvalid),
+    .m_axil_rdma_1_araddr  (m_axil_rdma_1_araddr),
+    .m_axil_rdma_1_arready (m_axil_rdma_1_arready),
+    .m_axil_rdma_1_rvalid  (m_axil_rdma_1_rvalid),
+    .m_axil_rdma_1_rdata   (m_axil_rdma_1_rdata),
+    .m_axil_rdma_1_rresp   (m_axil_rdma_1_rresp),
+    .m_axil_rdma_1_rready  (m_axil_rdma_1_rready),
+`endif
+
     .aclk                (aclk),
     .aresetn             (aresetn)
   );
@@ -732,6 +810,21 @@ axi_lite_clock_converter axi_clock_conv_cms_inst (
       .m_axi_aresetn (cms_aresetn)
     );
 
+`ifdef __xup_vv8__
+  // BittWare XUP-VV8 has its own BMC; the Alveo CMS block design is not
+  // generated for this board.  Terminate the CMS AXI-lite slave with a
+  // minimal always-ready responder so host accesses into the CMS BAR
+  // window return zeros instead of hanging the bus.
+  assign axil_cms_int_awready = axil_cms_int_awvalid;
+  assign axil_cms_int_wready  = axil_cms_int_wvalid;
+  assign axil_cms_int_bvalid  = axil_cms_int_awvalid & axil_cms_int_wvalid;
+  assign axil_cms_int_bresp   = 2'b00;
+  assign axil_cms_int_arready = axil_cms_int_arvalid;
+  assign axil_cms_int_rvalid  = axil_cms_int_arvalid;
+  assign axil_cms_int_rdata   = 32'd0;
+  assign axil_cms_int_rresp   = 2'b00;
+  assign satellite_uart_0_txd = 1'b1;
+`else
 cms_subsystem_wrapper
   cms_subsystem_wrapper_inst (
     .aclk_ctrl_0             (cms_clk),
@@ -792,5 +885,6 @@ cms_subsystem_wrapper
     .satellite_uart_0_rxd    (satellite_uart_0_rxd),
     .satellite_uart_0_txd    (satellite_uart_0_txd)
   );
+`endif
 
 endmodule: system_config

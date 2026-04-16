@@ -81,6 +81,98 @@ module box_250mhz #(
   input   [80*NUM_CMAC_PORT-1:0] s_axis_adap_rx_250mhz_tuser_ptp_ts,
   output     [NUM_CMAC_PORT-1:0] s_axis_adap_rx_250mhz_tready,
 
+`ifdef __rdma_enabled__
+  // RDMA AXI-Stream: RX path (CMAC -> classifier -> ERNIC)
+  output                         m_axis_user2rdma_roce_from_cmac_rx_tvalid,
+  output                 [511:0] m_axis_user2rdma_roce_from_cmac_rx_tdata,
+  output                  [63:0] m_axis_user2rdma_roce_from_cmac_rx_tkeep,
+  output                         m_axis_user2rdma_roce_from_cmac_rx_tlast,
+  input                          m_axis_user2rdma_roce_from_cmac_rx_tready,
+
+  // RDMA AXI-Stream: TX path (ERNIC -> CMAC)
+  input                          s_axis_rdma2user_to_cmac_tx_tvalid,
+  input                  [511:0] s_axis_rdma2user_to_cmac_tx_tdata,
+  input                   [63:0] s_axis_rdma2user_to_cmac_tx_tkeep,
+  input                          s_axis_rdma2user_to_cmac_tx_tlast,
+  output                         s_axis_rdma2user_to_cmac_tx_tready,
+
+  // RDMA AXI-Stream: non-RoCE TX bypass (QDMA -> ERNIC TX merger)
+  output                         m_axis_user2rdma_from_qdma_tx_tvalid,
+  output                 [511:0] m_axis_user2rdma_from_qdma_tx_tdata,
+  output                  [63:0] m_axis_user2rdma_from_qdma_tx_tkeep,
+  output                         m_axis_user2rdma_from_qdma_tx_tlast,
+  input                          m_axis_user2rdma_from_qdma_tx_tready,
+
+  // Immediate data sideband
+  input                   [63:0] s_axis_rdma2user_ieth_immdt_tdata,
+  input                          s_axis_rdma2user_ieth_immdt_tlast,
+  input                          s_axis_rdma2user_ieth_immdt_tvalid,
+  output                         s_axis_rdma2user_ieth_immdt_trdy,
+
+  // Doorbell / QP handshaking: send CQ doorbell
+  input                          s_resp_hndler_i_send_cq_db_cnt_valid,
+  input                   [9 :0] s_resp_hndler_i_send_cq_db_addr,
+  input                   [31:0] s_resp_hndler_i_send_cq_db_cnt,
+  output                         s_resp_hndler_o_send_cq_db_rdy,
+
+  // Doorbell / QP handshaking: SQ producer-index doorbell
+  output                  [15:0] m_o_qp_sq_pidb_hndshk,
+  output                  [31:0] m_o_qp_sq_pidb_wr_addr_hndshk,
+  output                         m_o_qp_sq_pidb_wr_valid_hndshk,
+  input                          m_i_qp_sq_pidb_wr_rdy,
+
+  // Doorbell / QP handshaking: RQ consumer-index doorbell
+  output                  [15:0] m_o_qp_rq_cidb_hndshk,
+  output                  [31:0] m_o_qp_rq_cidb_wr_addr_hndshk,
+  output                         m_o_qp_rq_cidb_wr_valid_hndshk,
+  input                          m_i_qp_rq_cidb_wr_rdy,
+
+  // Doorbell / QP handshaking: RX packet handler RQ doorbell
+  input                          s_rx_pkt_hndler_i_rq_db_data_valid,
+  input                   [9 :0] s_rx_pkt_hndler_i_rq_db_addr,
+  input                   [31:0] s_rx_pkt_hndler_i_rq_db_data,
+  output                         s_rx_pkt_hndler_o_rq_db_rdy,
+
+  // Compute logic AXI-MM port
+  output                         m_axi_compute_logic_awid,
+  output                [63 : 0] m_axi_compute_logic_awaddr,
+  output                 [3 : 0] m_axi_compute_logic_awqos,
+  output                 [7 : 0] m_axi_compute_logic_awlen,
+  output                 [2 : 0] m_axi_compute_logic_awsize,
+  output                 [1 : 0] m_axi_compute_logic_awburst,
+  output                 [3 : 0] m_axi_compute_logic_awcache,
+  output                 [2 : 0] m_axi_compute_logic_awprot,
+  output                         m_axi_compute_logic_awvalid,
+  input                          m_axi_compute_logic_awready,
+  output               [511 : 0] m_axi_compute_logic_wdata,
+  output                [63 : 0] m_axi_compute_logic_wstrb,
+  output                         m_axi_compute_logic_wlast,
+  output                         m_axi_compute_logic_wvalid,
+  input                          m_axi_compute_logic_wready,
+  output                         m_axi_compute_logic_awlock,
+  input                          m_axi_compute_logic_bid,
+  input                  [1 : 0] m_axi_compute_logic_bresp,
+  input                          m_axi_compute_logic_bvalid,
+  output                         m_axi_compute_logic_bready,
+  output                         m_axi_compute_logic_arid,
+  output                [63 : 0] m_axi_compute_logic_araddr,
+  output                 [7 : 0] m_axi_compute_logic_arlen,
+  output                 [2 : 0] m_axi_compute_logic_arsize,
+  output                 [1 : 0] m_axi_compute_logic_arburst,
+  output                 [3 : 0] m_axi_compute_logic_arcache,
+  output                 [2 : 0] m_axi_compute_logic_arprot,
+  output                         m_axi_compute_logic_arvalid,
+  input                          m_axi_compute_logic_arready,
+  input                          m_axi_compute_logic_rid,
+  input                [511 : 0] m_axi_compute_logic_rdata,
+  input                  [1 : 0] m_axi_compute_logic_rresp,
+  input                          m_axi_compute_logic_rlast,
+  input                          m_axi_compute_logic_rvalid,
+  output                         m_axi_compute_logic_rready,
+  output                         m_axi_compute_logic_arlock,
+  output                  [3:0]  m_axi_compute_logic_arqos,
+`endif
+
   input                   [15:0] mod_rstn,
   output                  [15:0] mod_rst_done,
 

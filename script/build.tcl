@@ -107,6 +107,8 @@ array set build_options {
     -bitstream_userid  "0xDEADC0DE"
     -bitstream_usr_access "0x66669999"
     -sim  0
+    -rdma        0
+    -classifier  rtl
 }
 set build_options(-user_plugin) ${plugin_dir}/p2p
 
@@ -232,9 +234,19 @@ if {[string equal $board_repo ""]} {
 
 # Enumerate modules
 foreach name [glob -tails -directory ${src_dir} -type d *] {
-    if {![string equal $name "shell"]} {
-        dict append module_dict $name "${src_dir}/${name}"
+    if {[string equal $name "shell"]} {
+        continue
     }
+    # Skip RDMA-only modules when -rdma is not enabled
+    if {!$rdma && ([string equal $name "mem_ctrl"] || [string equal $name "rdma_subsystem"])} {
+        continue
+    }
+    set mod_dir "${src_dir}/${name}"
+    # Board-specific module path (e.g., mem_ctrl/au250)
+    if {[string equal $name "mem_ctrl"]} {
+        set mod_dir "${mod_dir}/${board}"
+    }
+    dict append module_dict $name $mod_dir
 }
 
 # Create/open Manage IP project
@@ -344,6 +356,11 @@ set verilog_define "__synthesis__ __${board}__"
 if {$zynq_family} {
     append verilog_define " " "__zynq_family__"
 }
+if {$rdma} {
+    append verilog_define " " "__rdma_enabled__"
+    append verilog_define " " "__classifier_${classifier}__"
+    puts "INFO: RDMA enabled with classifier=$classifier"
+}
 set_property verilog_define $verilog_define [current_fileset]
 
 # Read IPs from finished IP runs
@@ -421,6 +438,10 @@ read_xdc -unmanaged ${constr_dir}/${board}/pins.xdc
 read_xdc -unmanaged ${constr_dir}/${board}/timing.xdc
 read_xdc ${constr_dir}/${board}/general.xdc
 read_xdc ${build_dir}/run_params.xdc
+if {$rdma && [file exists ${constr_dir}/${board}/pins_ddr4.xdc]} {
+    read_xdc -unmanaged ${constr_dir}/${board}/pins_ddr4.xdc
+    puts "INFO: Read DDR4 pin constraints for $board"
+}
 
 # Simulate design
 if {$sim} {
@@ -446,7 +467,7 @@ if {$sim} {
 # Implement design
 if {$impl} {
     update_compile_order -fileset sources_1
-    _do_impl $jobs {"Vivado Implementation Defaults"}
+    _do_impl $jobs {"Performance_ExploreWithRemap"}
 }
 
 if {$post_impl} {

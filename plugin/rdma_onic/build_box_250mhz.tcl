@@ -15,20 +15,10 @@
 # limitations under the License.
 #
 # *************************************************************************
-set ips {
-    system_config_axi_crossbar
-    system_management_wiz
-    clk_wiz_50Mhz
-    axi_quad_spi_0
-}
-
-# Alveo Card Management Subsystem IP is only available for Alveo parts.
-# Boards without it (e.g. BittWare XUP-VV8) stub the CMS AXI responder in
-# system_config.sv under `ifdef __xup_vv8__`.
-if {$board ne "xup_vv8"} {
-    lappend ips "cms_subsystem_0"
-}
-
 if {$num_qdma > 1} {
-    lappend ips "system_config_axi_clock_converter"
+    source box_250mhz/box_250mhz_axis_switch.tcl
 }
+read_verilog -quiet -sv rdma_onic_250mhz.sv
+read_verilog -quiet -sv packet_classification/packet_classifier_rtl.sv
+read_verilog -quiet -sv packet_classification/packet_filter.sv
+read_verilog -quiet -sv rn_reg_control.sv

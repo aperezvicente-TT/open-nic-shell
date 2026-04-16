@@ -18,4 +18,8 @@
 set ips {
     axi_stream_pipeline
     axi_lite_clock_converter
+    sys_mem_5to2_axi_crossbar
+    dev_mem_4to1_axi_crossbar
+    sys_mem_2to1_axi_crossbar
+    axi_clock_converter_for_mem
 }

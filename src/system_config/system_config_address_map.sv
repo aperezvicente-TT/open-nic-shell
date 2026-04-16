@@ -17,34 +17,70 @@
 // *************************************************************************
 // System address map (through PCI-e BAR2 4MB)
 //
+// Without __rdma_enabled__ (13 master ports):
 // --------------------------------------------------
 //   BaseAddr  |  HighAddr |  Module
 // --------------------------------------------------
-//    0x00000  |  0x00FFF  |  System configuration
+//    0x00000  |  0x00FFF  |  M00  System configuration
 // --------------------------------------------------
-//    0x01000  |  0x05FFF  |  QDMA subsystem #0
+//    0x01000  |  0x05FFF  |  M01  QDMA subsystem #0
 // --------------------------------------------------
-//    0x08000  |  0x0AFFF  |  CMAC subsystem #0
+//    0x08000  |  0x0AFFF  |  M02  CMAC subsystem #0
 // --------------------------------------------------
-//    0x0B000  |  0x0BFFF  |  Packet adapter #0
+//    0x0B000  |  0x0BFFF  |  M03  Packet adapter #0
 // --------------------------------------------------
-//    0x0C000  |  0x0EFFF  |  CMAC subsystem #1
+//    0x0C000  |  0x0EFFF  |  M04  CMAC subsystem #1
 // --------------------------------------------------
-//    0x0F000  |  0x0FFFF  |  Packet adapter #1
+//    0x0F000  |  0x0FFFF  |  M05  Packet adapter #1
 // --------------------------------------------------
-//    0x10000  |  0x11FFF  |  Sysmon block
+//    0x10000  |  0x11FFF  |  M06  Sysmon block
 // --------------------------------------------------
-//    0x12000  |  0x16FFF  |  QDMA subsystem #1
+//    0x12000  |  0x16FFF  |  M07  QDMA subsystem #1
 // --------------------------------------------------
-//   0x100000  |  0x1FFFFF |  Box0 @ 250MHz
+//   0x200000  |  0x2FFFFF |  M08  Box1 @ 322MHz
 // --------------------------------------------------
-//   0x200000  |  0x2FFFFF |  Box1 @ 322MHz
+//   0x100000  |  0x1FFFFF |  M09  Box0 @ 250MHz
 // --------------------------------------------------
-//   0x300000  |  0x33FFFF |  Card Management System
+//   0x300000  |  0x33FFFF |  M10  Card Management System
 // --------------------------------------------------
-//   0x340000  |  0x340FFF |  QSPI
+//   0x340000  |  0x340FFF |  M11  QSPI
 // --------------------------------------------------
-//    0x18000  |  0x1AFFF  |  PTP subsystem
+//    0x18000  |  0x1AFFF  |  M12  PTP subsystem
+// --------------------------------------------------
+//
+// With __rdma_enabled__ (15 master ports):
+// --------------------------------------------------
+//   BaseAddr  |  HighAddr |  Module
+// --------------------------------------------------
+//    0x00000  |  0x00FFF  |  M00  System configuration
+// --------------------------------------------------
+//    0x01000  |  0x05FFF  |  M01  QDMA subsystem #0
+// --------------------------------------------------
+//    0x08000  |  0x0AFFF  |  M02  CMAC subsystem #0
+// --------------------------------------------------
+//    0x0B000  |  0x0BFFF  |  M03  Packet adapter #0
+// --------------------------------------------------
+//    0x0C000  |  0x0EFFF  |  M04  CMAC subsystem #1
+// --------------------------------------------------
+//    0x0F000  |  0x0FFFF  |  M05  Packet adapter #1
+// --------------------------------------------------
+//    0x10000  |  0x11FFF  |  M06  Sysmon block
+// --------------------------------------------------
+//    0x12000  |  0x16FFF  |  M07  QDMA subsystem #1
+// --------------------------------------------------
+//   0x500000  |  0x5FFFFF |  M08  Box1 @ 322MHz  (shifted)
+// --------------------------------------------------
+//   0x400000  |  0x4FFFFF |  M09  Box0 @ 250MHz  (shifted)
+// --------------------------------------------------
+//   0x300000  |  0x33FFFF |  M10  Card Management System
+// --------------------------------------------------
+//   0x340000  |  0x340FFF |  M11  QSPI
+// --------------------------------------------------
+//    0x18000  |  0x1AFFF  |  M12  PTP subsystem
+// --------------------------------------------------
+//   0x200000  |  0x3FFFFF |  M13  ERNIC0 (CMAC0/QSFP0)
+// --------------------------------------------------
+//   0x600000  |  0x7FFFFF |  M14  ERNIC1 (CMAC1/QSFP1)
 // --------------------------------------------------
 
 `include "open_nic_shell_macros.vh"
@@ -246,11 +282,53 @@ module system_config_address_map #(
   input                   [1:0] m_axil_ptp_rresp,
   output                        m_axil_ptp_rready,
 
+`ifdef __rdma_enabled__
+  output                        m_axil_rdma_awvalid,
+  output                 [31:0] m_axil_rdma_awaddr,
+  input                         m_axil_rdma_awready,
+  output                        m_axil_rdma_wvalid,
+  output                 [31:0] m_axil_rdma_wdata,
+  output                  [3:0] m_axil_rdma_wstrb,
+  input                         m_axil_rdma_wready,
+  input                         m_axil_rdma_bvalid,
+  input                   [1:0] m_axil_rdma_bresp,
+  output                        m_axil_rdma_bready,
+  output                        m_axil_rdma_arvalid,
+  output                 [31:0] m_axil_rdma_araddr,
+  input                         m_axil_rdma_arready,
+  input                         m_axil_rdma_rvalid,
+  input                  [31:0] m_axil_rdma_rdata,
+  input                   [1:0] m_axil_rdma_rresp,
+  output                        m_axil_rdma_rready,
+
+  output                        m_axil_rdma_1_awvalid,
+  output                 [31:0] m_axil_rdma_1_awaddr,
+  input                         m_axil_rdma_1_awready,
+  output                        m_axil_rdma_1_wvalid,
+  output                 [31:0] m_axil_rdma_1_wdata,
+  output                  [3:0] m_axil_rdma_1_wstrb,
+  input                         m_axil_rdma_1_wready,
+  input                         m_axil_rdma_1_bvalid,
+  input                   [1:0] m_axil_rdma_1_bresp,
+  output                        m_axil_rdma_1_bready,
+  output                        m_axil_rdma_1_arvalid,
+  output                 [31:0] m_axil_rdma_1_araddr,
+  input                         m_axil_rdma_1_arready,
+  input                         m_axil_rdma_1_rvalid,
+  input                  [31:0] m_axil_rdma_1_rdata,
+  input                   [1:0] m_axil_rdma_1_rresp,
+  output                        m_axil_rdma_1_rready,
+`endif
+
   input          [NUM_QDMA-1:0] aclk,
   input                         aresetn
 );
 
+`ifdef __rdma_enabled__
+  localparam C_NUM_SLAVES  = 15;
+`else
   localparam C_NUM_SLAVES  = 13;
+`endif
 
   localparam C_SCFG_INDEX  = 0;
   localparam C_QDMA0_INDEX = 1;
@@ -265,6 +343,10 @@ module system_config_address_map #(
   localparam C_CMS_INDEX   = 10;
   localparam C_QSPI_INDEX  = 11;
   localparam C_PTP_INDEX   = 12;
+`ifdef __rdma_enabled__
+  localparam C_RDMA0_INDEX = 13;
+  localparam C_RDMA1_INDEX = 14;
+`endif
 
   localparam C_SCFG_BASE_ADDR  = 32'h0;
   localparam C_QDMA0_BASE_ADDR = 32'h01000;
@@ -274,8 +356,15 @@ module system_config_address_map #(
   localparam C_CMAC1_BASE_ADDR = 32'h0C000;
   localparam C_ADAP1_BASE_ADDR = 32'h0F000;
   localparam C_SMON_BASE_ADDR  = 32'h10000;  // 14 bits
+`ifdef __rdma_enabled__
+  localparam C_BOX1_BASE_ADDR  = 32'h500000; // 20 bits (shifted for dual ERNIC)
+  localparam C_BOX0_BASE_ADDR  = 32'h400000; // 20 bits (shifted for dual ERNIC)
+  localparam C_RDMA0_BASE_ADDR = 32'h200000; // 21 bits (2MB ERNIC0)
+  localparam C_RDMA1_BASE_ADDR = 32'h600000; // 21 bits (2MB ERNIC1)
+`else
   localparam C_BOX1_BASE_ADDR  = 32'h200000; // 20 bits
   localparam C_BOX0_BASE_ADDR  = 32'h100000; // 20 bits
+`endif
   localparam C_CMS_BASE_ADDR   = 32'h300000; // 18 bits
   localparam C_QSPI_BASE_ADDR  = 32'h340000; // 12 bits
   localparam C_PTP_BASE_ADDR   = 32'h18000;  // 14 bits
@@ -306,6 +395,12 @@ module system_config_address_map #(
   wire                [31:0] axil_qspi_araddr;
   wire                [31:0] axil_ptp_awaddr;
   wire                [31:0] axil_ptp_araddr;
+`ifdef __rdma_enabled__
+  wire                [31:0] axil_rdma_awaddr;
+  wire                [31:0] axil_rdma_araddr;
+  wire                [31:0] axil_rdma_1_awaddr;
+  wire                [31:0] axil_rdma_1_araddr;
+`endif
 
   wire        [NUM_QDMA-1:0] axil_pcie_awvalid;
   wire     [32*NUM_QDMA-1:0] axil_pcie_awaddr;
@@ -371,6 +466,12 @@ module system_config_address_map #(
   assign axil_qspi_araddr                      = axil_araddr[`getvec(32, C_QSPI_INDEX)] - C_QSPI_BASE_ADDR;
   assign axil_ptp_awaddr                       = axil_awaddr[`getvec(32, C_PTP_INDEX)] - C_PTP_BASE_ADDR;
   assign axil_ptp_araddr                       = axil_araddr[`getvec(32, C_PTP_INDEX)] - C_PTP_BASE_ADDR;
+`ifdef __rdma_enabled__
+  assign axil_rdma_awaddr                      = axil_awaddr[`getvec(32, C_RDMA0_INDEX)] - C_RDMA0_BASE_ADDR;
+  assign axil_rdma_araddr                      = axil_araddr[`getvec(32, C_RDMA0_INDEX)] - C_RDMA0_BASE_ADDR;
+  assign axil_rdma_1_awaddr                    = axil_awaddr[`getvec(32, C_RDMA1_INDEX)] - C_RDMA1_BASE_ADDR;
+  assign axil_rdma_1_araddr                    = axil_araddr[`getvec(32, C_RDMA1_INDEX)] - C_RDMA1_BASE_ADDR;
+`endif
 
   assign m_axil_scfg_awvalid                   = axil_awvalid[C_SCFG_INDEX];
   assign m_axil_scfg_awaddr                    = axil_scfg_awaddr;
@@ -764,6 +865,46 @@ module system_config_address_map #(
   assign axil_rdata[`getvec(32, C_PTP_INDEX)]   = m_axil_ptp_rdata;
   assign axil_rresp[`getvec(2, C_PTP_INDEX)]    = m_axil_ptp_rresp;
   assign m_axil_ptp_rready                      = axil_rready[C_PTP_INDEX];
+
+`ifdef __rdma_enabled__
+  // ERNIC0 (CMAC0/QSFP0)
+  assign m_axil_rdma_awvalid                     = axil_awvalid[C_RDMA0_INDEX];
+  assign m_axil_rdma_awaddr                      = axil_rdma_awaddr;
+  assign axil_awready[C_RDMA0_INDEX]             = m_axil_rdma_awready;
+  assign m_axil_rdma_wvalid                      = axil_wvalid[C_RDMA0_INDEX];
+  assign m_axil_rdma_wdata                       = axil_wdata[`getvec(32, C_RDMA0_INDEX)];
+  assign m_axil_rdma_wstrb                       = axil_wstrb[`getvec(4, C_RDMA0_INDEX)];
+  assign axil_wready[C_RDMA0_INDEX]              = m_axil_rdma_wready;
+  assign axil_bvalid[C_RDMA0_INDEX]              = m_axil_rdma_bvalid;
+  assign axil_bresp[`getvec(2, C_RDMA0_INDEX)]   = m_axil_rdma_bresp;
+  assign m_axil_rdma_bready                      = axil_bready[C_RDMA0_INDEX];
+  assign m_axil_rdma_arvalid                     = axil_arvalid[C_RDMA0_INDEX];
+  assign m_axil_rdma_araddr                      = axil_rdma_araddr;
+  assign axil_arready[C_RDMA0_INDEX]             = m_axil_rdma_arready;
+  assign axil_rvalid[C_RDMA0_INDEX]              = m_axil_rdma_rvalid;
+  assign axil_rdata[`getvec(32, C_RDMA0_INDEX)]  = m_axil_rdma_rdata;
+  assign axil_rresp[`getvec(2, C_RDMA0_INDEX)]   = m_axil_rdma_rresp;
+  assign m_axil_rdma_rready                      = axil_rready[C_RDMA0_INDEX];
+
+  // ERNIC1 (CMAC1/QSFP1)
+  assign m_axil_rdma_1_awvalid                     = axil_awvalid[C_RDMA1_INDEX];
+  assign m_axil_rdma_1_awaddr                      = axil_rdma_1_awaddr;
+  assign axil_awready[C_RDMA1_INDEX]               = m_axil_rdma_1_awready;
+  assign m_axil_rdma_1_wvalid                      = axil_wvalid[C_RDMA1_INDEX];
+  assign m_axil_rdma_1_wdata                       = axil_wdata[`getvec(32, C_RDMA1_INDEX)];
+  assign m_axil_rdma_1_wstrb                       = axil_wstrb[`getvec(4, C_RDMA1_INDEX)];
+  assign axil_wready[C_RDMA1_INDEX]                = m_axil_rdma_1_wready;
+  assign axil_bvalid[C_RDMA1_INDEX]                = m_axil_rdma_1_bvalid;
+  assign axil_bresp[`getvec(2, C_RDMA1_INDEX)]     = m_axil_rdma_1_bresp;
+  assign m_axil_rdma_1_bready                      = axil_bready[C_RDMA1_INDEX];
+  assign m_axil_rdma_1_arvalid                     = axil_arvalid[C_RDMA1_INDEX];
+  assign m_axil_rdma_1_araddr                      = axil_rdma_1_araddr;
+  assign axil_arready[C_RDMA1_INDEX]               = m_axil_rdma_1_arready;
+  assign axil_rvalid[C_RDMA1_INDEX]                = m_axil_rdma_1_rvalid;
+  assign axil_rdata[`getvec(32, C_RDMA1_INDEX)]    = m_axil_rdma_1_rdata;
+  assign axil_rresp[`getvec(2, C_RDMA1_INDEX)]     = m_axil_rdma_1_rresp;
+  assign m_axil_rdma_1_rready                      = axil_rready[C_RDMA1_INDEX];
+`endif
 
   generate if (NUM_QDMA > 1) begin
     system_config_axi_clock_converter axi_clk_converter_inst (

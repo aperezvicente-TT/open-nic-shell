@@ -1,6 +1,6 @@
 # *************************************************************************
 #
-# Copyright 2020 Xilinx, Inc.
+# Copyright 2022 Xilinx, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,20 +15,12 @@
 # limitations under the License.
 #
 # *************************************************************************
-set ips {
-    system_config_axi_crossbar
-    system_management_wiz
-    clk_wiz_50Mhz
-    axi_quad_spi_0
-}
+set rdma_ip rdma_core
+create_ip -name ernic -vendor xilinx.com -library ip -version 4.2 -module_name $rdma_ip -dir ${ip_build_dir}
 
-# Alveo Card Management Subsystem IP is only available for Alveo parts.
-# Boards without it (e.g. BittWare XUP-VV8) stub the CMS AXI responder in
-# system_config.sv under `ifdef __xup_vv8__`.
-if {$board ne "xup_vv8"} {
-    lappend ips "cms_subsystem_0"
-}
-
-if {$num_qdma > 1} {
-    lappend ips "system_config_axi_clock_converter"
-}
+set_property -dict {
+    CONFIG.C_NUM_QP {32}
+    CONFIG.C_M_AXI_ADDR_WIDTH {64}
+    CONFIG.C_EN_DEBUG_PORTS {1}
+    CONFIG.C_EN_INITIATOR_LITE {1}
+} [get_ips $rdma_ip]

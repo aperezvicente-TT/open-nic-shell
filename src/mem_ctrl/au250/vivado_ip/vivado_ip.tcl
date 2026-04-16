@@ -16,19 +16,5 @@
 #
 # *************************************************************************
 set ips {
-    system_config_axi_crossbar
-    system_management_wiz
-    clk_wiz_50Mhz
-    axi_quad_spi_0
-}
-
-# Alveo Card Management Subsystem IP is only available for Alveo parts.
-# Boards without it (e.g. BittWare XUP-VV8) stub the CMS AXI responder in
-# system_config.sv under `ifdef __xup_vv8__`.
-if {$board ne "xup_vv8"} {
-    lappend ips "cms_subsystem_0"
-}
-
-if {$num_qdma > 1} {
-    lappend ips "system_config_axi_clock_converter"
+    dev_mem_ddr4_controller
 }

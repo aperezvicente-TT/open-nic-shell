@@ -60,3 +60,15 @@ set_property -dict {
 } [get_ips $axi_crossbar]
 
 set_property CONFIG.NUM_SI [expr {$num_qdma}] [get_ips $axi_crossbar]
+
+if {[info exists rdma] && $rdma} {
+    set_property -dict {
+        CONFIG.NUM_MI {15}
+        CONFIG.M08_A00_BASE_ADDR {0x0000000000500000}
+        CONFIG.M09_A00_BASE_ADDR {0x0000000000400000}
+        CONFIG.M13_A00_BASE_ADDR {0x0000000000200000}
+        CONFIG.M13_A00_ADDR_WIDTH {18}
+        CONFIG.M14_A00_BASE_ADDR {0x0000000000600000}
+        CONFIG.M14_A00_ADDR_WIDTH {18}
+    } [get_ips $axi_crossbar]
+}
