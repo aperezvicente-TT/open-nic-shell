@@ -1,5 +1,16 @@
 # Phase 0 / Phase 1 — ERNIC Bring-up Verification Plan
 
+> **SUPERSEDED 2026-04-16 (late)** — Phase 0 completed and produced the definitive finding that probes at `BAR2+0x220000` were hitting the MR/PD table (PD entry 512), not XRNICCONF. ERNIC v4.2 has GCSR at `ERNIC+0x100000`, unreachable with the current 256 KB crossbar windows. Phase 1 as described here targets the old 4 MB BAR / 256 KB window layout — it's obsolete.
+>
+> **Current pointers:**
+> - Phase 0 closure: `status.md` → "Phase 0 Results — CLOSED 2026-04-16"
+> - Phase 0 probe artifacts: `rdma_test/phase0_ernic_probe.c`, `phase0b_ernic_enable.c`, `phase0c_pd_table.c`
+> - Replacement Phase 1 (post-rebuild CSR bring-up): `phase2_rtl_rebuild_plan.md` → "Tier 1a" (to be added)
+>
+> This document is retained for history. Do not act on it.
+
+---
+
 Date: 2026-04-16
 Author: verification plan for the `au200_2cmac_2pf_rdma` bitstream currently loaded on `0000:82:00.0` / `0000:82:00.1`.
 

@@ -1,5 +1,14 @@
 # RecoNIC Integration onto Open-NIC-Shell: Step-by-Step Plan (Dual RDMA)
 
+> **SUPERSEDED 2026-04-16** — This is the original integration plan. Steps 1–9 were executed and produced the `au200_2cmac_2pf_rdma` bitstream. **Phase 0 audit found 3 post-execution RTL/software blockers** (ERNIC v4.2 IP vs v4.0 register map in libreconic, 256 KB crossbar windows vs 2 MB required, QDMA bridge disabled). Current active planning lives in:
+>
+> - **`status.md`** — integration tracker and Phase 0 closure findings
+> - **`phase2_rtl_rebuild_plan.md`** — current rebuild plan (Tier 1 required, Tier 2 optional)
+>
+> This document is retained for history. Do not act on it.
+
+---
+
 ## Goal
 
 Integrate **two** Xilinx ERNIC engines (hardware RoCEv2 RDMA) — one per CMAC port — plus packet classification + compute offload from the RecoNIC project into the standalone open-nic-shell, preserving the existing NIC functionality and plugin architecture.

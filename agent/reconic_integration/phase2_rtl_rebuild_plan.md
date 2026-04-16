@@ -150,9 +150,27 @@ if (!(calib & 0x1)) { fprintf(stderr, "DDR4 NOT CALIBRATED — bail\n"); exit(1)
 
 ## Tier 1 — Canonical RDMA (required, minimum viable)
 
-All Tier 1 items land together in one bitstream; partial landings don't produce testable hardware. After this rebuild, Phase 2 loopback with `host_mem` buffers works end-to-end (Mellanox-pattern RDMA).
+**Split 2026-04-16**: Tier 1 is further divided into **Tier 1a** (CSR-only bring-up; de-risks register-map changes) and **Tier 1b** (QDMA bridge wiring; enables actual RDMA traffic). Rationale: the ERNIC v4.0 → v4.3 register map rewrite is the single biggest unknown. Tier 1a validates it in a smaller bitstream before investing in 1b's more invasive wiring. Two builds instead of one, but lower-risk per iteration.
 
-### Item 1: Expand ERNIC crossbar windows (16 MB layout per Task A)
+### Tier 1a — CSR bring-up (≈2 days)
+
+Items 1, 5-partial, 6. Produces a bitstream where the host can reach ERNIC GCSR and QCSR via BAR2, program MAC/IP/PD context, and confirm NUM_QP=32 in XRNICCONF readback. **No DMA path.** Phase 2 loopback test doesn't work yet.
+
+**Success criterion**: `phase1_csr_bringup` runs end-to-end; XRNICCONF round-trips with EN=1 latching and NUM_QP[15:8]=`0x20`; PD table + MR entries programmable; MAC/IPv4 configuration registers round-trip.
+
+### Tier 1b — DMA bridge + full RDMA (≈2 days, after 1a passes)
+
+Items 2, 3, 4, 5-remaining. Produces the full Phase 2 bitstream. ERNIC can DMA SQ/RQ/CQ/DATBUF accesses to host hugepages via QDMA `s_axib`.
+
+**Success criterion**: Phase 2 RDMA WRITE loopback (CMAC0↔CMAC1 via external fiber) completes with CQE posted and data arriving at destination hugepage.
+
+---
+
+All Tier 1a/1b items must land in-order; Tier 1b assumes Tier 1a's bitstream proved v4.3 offsets work.
+
+### Item 1 [Tier 1a, DONE 2026-04-16]: Expand ERNIC crossbar windows (16 MB layout per Task A)
+
+**Status**: Committed to `feature/rdma-ernic` as `67887eb`. Vivado IP-gen smoke test passed (or in progress — check `script/build_v2_ipgen.log`).
 
 **File**: `src/system_config/vivado_ip/system_config_axi_crossbar.tcl` (RDMA build branch, lines 64-74)
 
@@ -188,7 +206,7 @@ M10 (CMS @ `0x300000`), M11 (QSPI @ `0x340000`), and the base block (M00-M07, M1
 - `src/system_config/system_config_address_map.sv` — update the RDMA-branch block comments (lines 51-84 per earlier audit): ERNIC0 `0x200000` → `0x800000`, ERNIC1 `0x600000` → `0xA00000`. Also update the `localparam C_RDMA0_BASE_ADDR`/`C_RDMA1_BASE_ADDR` values (around line 362-363). Address widths on those localparams go `20 → 21` bits.
 - `agent/reconic_integration/status.md` address map table — update ERNIC rows.
 
-### Item 2: Enable QDMA AXI-MM bridges + bump BAR2
+### Item 2 [Tier 1b]: Enable QDMA AXI-MM bridges + bump BAR2
 
 **File**: `src/qdma_subsystem/vivado_ip/qdma_no_sriov_au200.tcl`
 
@@ -214,7 +232,7 @@ M10 (CMS @ `0x300000`), M11 (QSPI @ `0x340000`), and the base block (M00-M07, M1
 
 The full replacement block can be copied from RecoNIC's reference (cross-check `PF[0-3]_MSIX_CAP_TABLE_SIZE_qdma` values — RecoNIC uses `009`/`008`, we have `01F` for higher queue-vector counts; keep our values).
 
-### Item 3: Wire the new QDMA bridge ports at top-level
+### Item 3 [Tier 1b]: Wire the new QDMA bridge ports at top-level
 
 **File**: `src/open_nic_shell.sv`
 
@@ -229,7 +247,7 @@ Per the research agent's RecoNIC reference (`open_nic_shell.sv:1743-1777` in Rec
 
 **Do NOT wire `m_axi_bridge_*` in Tier 1.** The `dev_mem_4to1` S00 slot stays tied off at `open_nic_shell.sv:3199-3211`. Tier 2 replaces that tie-off — see Tier 2 section below.
 
-### Item 4: `qdma_subsystem.sv` — expose `s_axib` ports (Tier 1 only)
+### Item 4 [Tier 1b]: `qdma_subsystem.sv` — expose `s_axib` ports
 
 **File**: `src/qdma_subsystem/qdma_subsystem.sv` (currently 888 lines, no `s_axib` or `m_axi_bridge` references)
 
@@ -237,7 +255,22 @@ Add port declarations for the QDMA IP's **slave bridge** (`s_axib_*`) interface 
 
 **Do NOT expose `m_axi_bridge_*` in Tier 1.** That's a separate QDMA IP port set — deferred to Tier 2.
 
-### Item 5: Rewrite `libreconic/reconic_reg.h` against PG332 v4.3
+### Item 5 [Split Tier 1a + 1b]: Rewrite `libreconic/reconic_reg.h` against PG332 v4.3
+
+**Tier 1a scope** — register offsets that `phase1_csr_bringup` touches:
+- Base addresses (`RN_RDMA_BASE_ADDRESS`, `RN_RDMA_1_BASE_ADDRESS`, `RN_RDMA_PORT_DELTA`, `RN_SCR_MAP_SIZE`) per Task A layout.
+- GCSR offsets: XRNICCONF, XRNICADCONF, MAC LSB/MSB, IPv4, IPv6×4, UDP port, INT regs.
+- PDT entry format (PG332 v4.3 Table 8 — PDPDNUM [23:0], VIRTADDR LSB/MSB, BUFBASEADDR LSB/MSB, BUFRKEY [7:0], WRRDBUFLEN, ACCESSDESC).
+- QCSR per-QP context regs at `+0x180000 + (i-1)*0x100`: QP_EN, QPCONFi, QPADVCONFi, SQPSNi, LSTRQREQPSNi, P_KEY, DESTQPCONFi.
+- **Skip** DATBUFBA/MSB, SQBAi/MSBi, RQBAi/MSBi, CQBAi/MSBi — those only matter when ERNIC starts DMA, which Tier 1a doesn't exercise.
+
+**Tier 1b scope** — DMA-buffer address registers:
+- DATBUFBA / DATBUFBAMSB.
+- SQBAi / SQBAMSBi, RQBAi / RQBAMSBi, CQBAi / CQBAMSBi (per-QP).
+- ERRBUFBA / ERRBUFBAMSB, RESPERRBUFBA / RESPERRBUFBAMSB, FATALERRBUFBA / FATALERRBUFBAMSB.
+- `config_rn_dev_axib_bdf` — audit QDMA CSR offset, re-enable if correct.
+
+---
 
 **File**: `/home/alex/mpi-shfs/fpga/libreconic/reconic_reg.h` (currently uses ERNIC v4.0 offsets and old layout bases)
 
@@ -283,7 +316,7 @@ and OR it into every MSB write.
 
 **Validation**: after rewriting, `rdma_test/phase1_csr_bringup.c` should reach XRNICCONF and round-trip it with NUM_QP=0x20 in [15:8].
 
-### Item 6 (trivial): Driver BAR range
+### Item 6 [Tier 1a, trivial]: Driver BAR range
 
 **File**: `open-nic-driver/onic_register.h`
 
