@@ -1,94 +1,129 @@
 # PTP IEEE 1588 Timestamping -- Implementation Status
 
-Last updated: 2026-04-13
+Last updated: 2026-04-16 (evening)
 
 ---
 
 ## Summary
 
-TX hardware timestamping is **fully working**. RX hardware timestamping is **blocked by a lane-skew correction pipeline bug in `cmac_subsystem.sv`**. Fix applied 2026-04-13. Needs FPGA bitstream rebuild + test.
+**End-to-end plumbing is live** on bitstream 0x0201: ptp4l with FPGA as slave and Mellanox ConnectX-5 as master reaches the `SLAVE` state, servo stays in `s2`, no more `FAULTY` transitions. TX and RX hardware timestamps both flow into ptp4l.
 
-ptp4l remains stuck in `s0` (never adjusts) because the slave RX timestamp is always zero, making the computed offset nonsensical (~-888 billion seconds).
+**Current gating issue: timestamp jitter.** Raw path-delay samples on a direct QSFP DAC cable vary from 2.7 µs to 258 µs (wire latency should be ~25 ns). As a result ptp4l oscillates at ±40–60 µs offset with ±50k ppb frequency swings rather than locking.
 
----
-
-## Current Blocker: RX timestamp lane-skew pipeline overwrite (2026-04-13)
-
-**Symptom:** ptp4l shows enormous master offset (~-888e15 ns after `phc_ctl set`, ~-1.776e18 ns before). Offset never converges; stays in `s0 freq +0` indefinitely. TX timestamps are correct (confirmed via dmesg `hwtstamp=1776065608...`).
-
-**Diagnostic:** Added `netdev_info` RX timestamp print (modulo 50) to driver. Output:
-```
-PTP RX TS #1: sec=0 ns=21 raw_hi=0x00000000 raw_lo=0x00000015 pktlen=78
-PTP RX TS #51: sec=0 ns=21 raw_hi=0x00000000 raw_lo=0x00000015 pktlen=60
-```
-
-The RX completion descriptor always contains `sec=0, ns=21`. The constant 21 ns is the lane-skew correction `(LANE_FILL_REF - sop_lane_fill) × 3 = (10-3)×3 = 21 ns` applied to a zeroed raw timestamp. Confirmed the "halving" pattern: with t2≈0, the PTP offset formula `((t2-t1) - (t4-t3))/2` gives exactly `-master_time/2` when t3=t4 (slave TX matching master after `phc_ctl set`).
-
-Also confirmed via PTP CTRL register (BAR2+0x18000) that all four CDCs are locked: `CTRL=0x01000f01`, bits [11:8]=0xF (TX0, RX0, TX1, RX1 all locked). The PTP clock reads correct wall-clock time (~1776066042 seconds). So the issue is not in the CDC or PTP clock — it's in how the CMAC timestamp reaches the completion descriptor.
-
-**Root cause:** In `cmac_subsystem.sv`, the lane-skew correction has a 2-stage registered pipeline:
-
-- **Stage 1** (cycle 0→1): registers `p1_raw_sec`, `p1_raw_ns`, `p1_correction_ns`
-- **Stage 2** (cycle 1→2): combinational add + wraparound → latched into `rx_ptp_ts_held` by `rx_sop_d[1]`
-
-The Xilinx CMAC IP only drives `rx_ptp_tstamp_out` for **one clock cycle** (on the SOP beat, when `rx_ptp_tstamp_valid_out` is asserted). On subsequent cycles, it reverts to zero.
-
-The stage 1 registers were **unconditionally updated every `cmac_clk` cycle** (no enable gate):
-
-```verilog
-always @(posedge cmac_clk) begin
-    p1_raw_ns  <= rx_ptp_ts_raw[29:0];     // updates EVERY cycle
-    p1_raw_sec <= rx_ptp_ts_raw[79:32];     // updates EVERY cycle
-    p1_correction_ns <= (...);
-end
-```
-
-Timeline:
-- **Cycle 0 (SOP):** `rx_ptp_ts_raw` = valid timestamp. Stage 1 captures it correctly.
-- **Cycle 1:** `rx_ptp_ts_raw` = 0 (CMAC no longer driving). Stage 1 **overwrites** valid value with 0.
-- **Cycle 2:** `rx_sop_d[1]` fires, latching `rx_ptp_ts_corrected` into `rx_ptp_ts_held`. But the corrected value is computed from the **zeroed** stage 1 registers → `{sec=0, ns=0+21}`.
-
-**Fix:** Gate stage 1 with SOP detection so registers only capture when the CMAC output is valid:
-
-```verilog
-wire rx_ptp_sop = axis_cmac_rx_tvalid && !rx_in_packet;
-
-always @(posedge cmac_clk) begin
-    if (rx_ptp_sop) begin
-        p1_raw_ns  <= rx_ptp_ts_raw[29:0];
-        p1_raw_sec <= rx_ptp_ts_raw[79:32];
-        p1_correction_ns <= (...);
-    end
-end
-```
-
-This preserves the valid SOP timestamp in stage 1 until stage 2 reads it on cycle 2.
-
-**Files modified:** `src/cmac_subsystem/cmac_subsystem.sv` (lines 193-206)
-
-**Status:** Code fix applied. Needs FPGA bitstream rebuild and hardware test.
+Root cause not yet isolated. Suspects (in order): (1) RX timestamp capture point on the wrong pipeline stage, (2) TX/RX reference-plane asymmetry at the CMAC, (3) tag-to-TS pairing races in the TX return FIFO. Next step is an ILA capture of raw `s_axis_rx_tuser_ptp_ts` at the CMAC boundary for 10 consecutive Sync frames — that separates CMAC-sourced jitter from in-logic jitter.
 
 ---
 
-## Previous Blockers (ALL RESOLVED)
+## 2026-04-16 Test Results (bitstream 0x0201)
 
-### 5. 80-bit timestamp format mismatch (FIXED 2026-04-09)
+### What works
+- `ptp4l -H -2 --slaveOnly=1` reaches `UNCALIBRATED → SLAVE` cleanly on second attempt (after initial large step).
+- TX DIAG: `delta_ms=0` for every TX tag (CMAC-returned TX timestamp matches current PTP clock within ~7 µs poll latency).
+- RX DIAG: timestamps arrive with plausible sec/ns, `delta_ms=0` vs current PTP clock.
+- CDC locked on all four domains (`cdc_locked=0xf` before and after `settime64`).
+- No more stale-SOP duplicates: consecutive RX packets carry distinct timestamps (though `gap_ms` still varies per-message-type).
 
-The 96→80 bit conversion in `ptp_subsystem.sv` produced the wrong format. Fix: `{cdc_ts_96[95:48], cdc_ts_96[47:16]}`. Driver simplified: `sec=ts_raw_hi`, `ns=ts_raw_lo & 0x3FFFFFFF`.
+### What does not converge
+Raw path-delay samples from ptp4l `-l 7`:
+```
+258595, 8476, 13382, 58633, 10323, 39714, 2726, 28298,
+6179,   75622, 56312, 26084, 38047, 5258   (ns)
+```
+Expected: ~25 ns with <10 ns jitter on a 5 m DAC. Observed jitter is ~10,000× over budget.
 
-### 4. packet_adapter_tx single-beat tag capture race (FIXED 2026-04-05)
+Master offset oscillates `+50 µs / -50 µs` every second; frequency correction swings ±50,000 ppb per sample — textbook servo oscillation driven by noisy timestamps, not a tuning issue.
 
-For 1-beat PTP packets (60 bytes), the sideband FIFO captures the stale registered tag value (0) instead of the current tag. Fix: mux FIFO `din` for single-beat packets.
+### Interpretation
+Bug #9 and Bug #10 were real and are fixed (plumbing is now end-to-end), but they are not the only source of RX timestamp error. There is at least one more defect upstream — either in the CMAC PTP config, the capture point in `packet_adapter_rx.sv` / `cmac_subsystem.sv`, or the TX-vs-RX MAC reference-plane offset. The servo cannot distinguish "offset" from "asymmetric delay", so asymmetry manifests as unbounded offset.
 
-### 3. P2P 322 MHz PTP tag pipeline skew (FIXED 2026-04-04)
+---
 
-PTP tag bypassed TX register slices while data went through 2 pipeline stages. Fix: widened TUSER_W from 1 to 17 (TX) and 1 to 81 (RX).
+## Current Blocker: Timestamp jitter investigation
 
-### 2. P2P 250 MHz PTP tag pipeline skew (FIXED 2026-04-01)
+Planned diagnostics:
+1. **ILA on raw CMAC RX timestamp.** Trigger on PTP Ethertype (0x88F7) at `axis_cmac_rx_tvalid && sop`, capture `rx_ptp_tstamp_out[79:0]` on the SOP beat for 10 consecutive Syncs. If those raw values show µs-scale jitter, the CMAC config is wrong (wrong tuser slice, wrong PTP mode). If they are clean, the jitter is being introduced downstream in our logic.
+2. **ILA on raw CMAC TX timestamp.** Same trigger on TX side; compare `tx_ptp_tstamp_out` latency relative to `tx_ptp_1588op_in` handshake.
+3. **ptp4l `-l 7` trace of t1/t2/t3/t4.** If forward leg `t2 - t1` is stable but reverse `t4 - t3` is noisy, RX timestamping is the suspect; if both are noisy, TX contributes as well.
+4. **Check CMAC PTP latency adjust registers.** Xilinx CMAC exposes TX/RX PTP latency adjust — a configured asymmetry here would produce a constant bias (not per-sample jitter), but worth ruling out.
 
-Same class of bug in the 250 MHz path. Fix: pack tag into `tuser[47:32]`.
+---
 
-### 1. CMAC IP cached without PTP (FIXED 2026-04-01)
+## Historical Blockers (all RESOLVED in 0x0201)
+
+### Bug #9: Wrong clock domain for ctl_rx_systemtimerin (FIXED in 0x0200, verified 0x0201)
+
+**Root cause:** The Xilinx CMAC IP uses `rx_clk = txusrclk2` (TX clock) for ALL user-facing signals including `ctl_rx_systemtimerin`. We drove it from `gt_rxusrclk2` (recovered RX clock) via async FIFO — a CDC violation.
+
+**Evidence:** TX DIAG showed `delta_ms=0` (perfect). RX DIAG showed `delta_ms=354-950` (hundreds of ms behind). Async FIFO input was correct but output was in wrong domain.
+
+**Fix (applied):** `cmac_subsystem_cmac_wrapper.sv` — changed both CMAC instances:
+```verilog
+.ctl_rx_systemtimerin (ptp_time),  // same as ctl_tx_systemtimerin
+```
+
+### Bug #10: Stale tuser on SOP beat (FIXED in 0x0201, verified — no `gap_ms=0` duplicates in 0x0201 run)
+
+**Root cause:** `rx_ptp_ts_held` updates via a 2-stage lane-skew correction pipeline, 2 cycles after the CMAC SOP. But `axis_cmac_rx_tuser_wide = {rx_ptp_ts_held, err}` is captured by downstream register slices on the SOP cycle itself — before the held register updates. The SOP beat's tuser carries the **previous packet's** timestamp.
+
+**Evidence (confirmed 2026-04-16):** Added `gap_ms` diagnostic comparing consecutive RX timestamps:
+
+| DIAG | delta_ms | gap_ms | Meaning |
+|------|----------|--------|---------|
+| #11 | 1000 | **0** | Same timestamp as previous packet (stale) |
+| #21 | 0 | 999 | Correct unique timestamp |
+| #41 | 0 | 1004 | Correct |
+| #61 | 1005 | **0** | Stale duplicate |
+| #91 | 1005 | **0** | Stale duplicate |
+| #101 | 1005 | **0** | Stale duplicate |
+
+`gap_ms=0` proves packets are getting duplicate timestamps. Every `gap_ms=0` correlates with `delta_ms≈1000` (the inter-Sync interval).
+
+**Fix (applied):** `cmac_subsystem.sv` — mux raw CMAC timestamp for SOP beat:
+```verilog
+wire [79:0] rx_ptp_ts_for_tuser = (axis_cmac_rx_tvalid && !rx_in_packet) ?
+                                   rx_ptp_ts_raw : rx_ptp_ts_held;
+assign axis_cmac_rx_tuser_wide = {rx_ptp_ts_for_tuser, axis_cmac_rx_tuser_err};
+```
+
+This skips the ±60ns lane-skew correction on the SOP beat (negligible for PTP) but guarantees the correct timestamp.
+
+---
+
+## Pre-0x0201 Blockers (ALL RESOLVED)
+
+### 7. RX lane-skew pipeline overwrite (FIXED 2026-04-13)
+
+CMAC drives `rx_ptp_tstamp_out` for 1 cycle (SOP). Stage 1 registers were unconditionally overwritten every cycle. Fix: gate stage 1 with SOP detection (`rx_ptp_sop`).
+
+### 6. 80-bit timestamp format mismatch (FIXED 2026-04-09)
+
+96→80 bit conversion produced wrong format. Fix: `{cdc_ts_96[95:48], cdc_ts_96[47:16]}`.
+
+### 5. adjtime truncation (FIXED 2026-04-07)
+
+`adj_ns = (u32)delta` truncated 64-bit deltas. Fix: read-modify-write via gettime/settime.
+
+### 4. TX TS delivery race (FIXED 2026-04-07)
+
+Workqueue latency exceeded ptp4l timeout. Fix: polling with delayed_work at 1 ms.
+
+### 3. packet_adapter_tx single-beat tag capture (FIXED 2026-04-05)
+
+1-beat PTP packets captured stale registered tag value (0). Fix: mux FIFO din for single-beat.
+
+### 2.5. adjfine used DRIFT registers (FIXED 2026-04-05)
+
+Verilog signedness bug in ptp_clock.v drift path. Fix: use PERIOD registers directly.
+
+### 2. P2P 322 MHz PTP tag pipeline skew (FIXED 2026-04-04)
+
+PTP tag bypassed TX register slices. Fix: widened TUSER_W from 1 to 17 (TX), 1 to 81 (RX).
+
+### 1. P2P 250 MHz PTP tag pipeline skew (FIXED 2026-04-01)
+
+Same class of bug in 250 MHz path. Fix: pack tag into tuser[47:32].
+
+### 0. CMAC IP cached without PTP (FIXED 2026-04-01)
 
 Build cached CMAC IP with `C_HAS_PTP=0`. Fix: rebuild with `-overwrite 1`.
 
@@ -96,139 +131,137 @@ Build cached CMAC IP with `C_HAS_PTP=0`. Fix: rebuild with `-overwrite 1`.
 
 ## Bugs Found and Fixed (Complete List)
 
-| # | Bug | Date Fixed | File(s) |
-|---|-----|-----------|---------|
-| 7 | **RX lane-skew pipeline overwrite** — stage 1 registers unconditionally overwritten every cycle; CMAC only holds timestamp for 1 cycle | 2026-04-13 | `cmac_subsystem.sv` |
-| 6 | **80-bit timestamp format mismatch** — wrong 96→80 bit conversion | 2026-04-09 | `ptp_subsystem.sv`, driver |
-| 5 | **adjtime truncation** — `adj_ns = (u32)delta` truncated 64-bit deltas | 2026-04-07 | `onic_ptp.c` |
-| 4 | **TX TS delivery race** — workqueue latency exceeded ptp4l timeout | 2026-04-07 | `onic_ptp.c` |
-| 3 | **packet_adapter_tx single-beat tag capture** — FIFO reads stale register for 1-beat packets | 2026-04-05 | `packet_adapter_tx.sv` |
-| 2.5 | **adjfine used DRIFT registers** — Verilog signedness bug in ptp_clock.v drift path | 2026-04-05 | `onic_ptp.c` |
-| 2 | **P2P 322 MHz tag pipeline skew** — tag bypassed register slices | 2026-04-04 | `p2p_322mhz.sv` |
-| 1 | **P2P 250 MHz tag pipeline skew** — tag bypassed TX pipeline | 2026-04-01 | `p2p_250mhz.sv` |
-| 0 | **CMAC IP cached without PTP** — stale IP with `C_HAS_PTP=0` | 2026-04-01 | build scripts |
+| # | Bug | Date Fixed | File(s) | Version |
+|---|-----|-----------|---------|---------|
+| 10 | **Stale tuser on SOP beat** — rx_ptp_ts_held 2 cycles late, SOP tuser has previous packet's timestamp | 2026-04-16 (pending rebuild) | `cmac_subsystem.sv` | 0x0201 |
+| 9 | **Wrong clock domain for ctl_rx_systemtimerin** — driven from gt_rxusrclk2, CMAC reads in txusrclk2 | 2026-04-16 (in 0x0200 build) | `cmac_subsystem_cmac_wrapper.sv` | 0x0200 |
+| 8 | **RX CDC approaches targeted wrong domain** — all 3 CDC approaches (independent CDC, register sync, async FIFO) crossed to gt_rxusrclk2 instead of txusrclk2 | 2026-04-15 (superseded by #9) | `ptp_subsystem.sv` | — |
+| 7 | **RX lane-skew pipeline overwrite** — stage 1 registers unconditionally overwritten every cycle | 2026-04-13 | `cmac_subsystem.sv` | — |
+| 6 | **80-bit timestamp format mismatch** — wrong 96→80 bit conversion | 2026-04-09 | `ptp_subsystem.sv`, driver | — |
+| 5 | **adjtime truncation** — `adj_ns = (u32)delta` truncated 64-bit deltas | 2026-04-07 | `onic_ptp.c` | — |
+| 4 | **TX TS delivery race** — workqueue latency exceeded ptp4l timeout | 2026-04-07 | `onic_ptp.c` | — |
+| 3 | **packet_adapter_tx single-beat tag capture** — FIFO reads stale register for 1-beat packets | 2026-04-05 | `packet_adapter_tx.sv` | — |
+| 2.5 | **adjfine used DRIFT registers** — Verilog signedness bug in ptp_clock.v drift path | 2026-04-05 | `onic_ptp.c` | — |
+| 2 | **P2P 322 MHz tag pipeline skew** — tag bypassed register slices | 2026-04-04 | `p2p_322mhz.sv` | — |
+| 1 | **P2P 250 MHz tag pipeline skew** — tag bypassed TX pipeline | 2026-04-01 | `p2p_250mhz.sv` | — |
+| 0 | **CMAC IP cached without PTP** — stale IP with `C_HAS_PTP=0` | 2026-04-01 | build scripts | — |
 
 ---
 
-## What's Verified Working (2026-04-13)
+## What's Verified Working (2026-04-16)
 
-### TX Path (end-to-end confirmed)
-
-| Component | Status | Evidence |
-|-----------|--------|----------|
-| PTP master clock (250 MHz) | OK | `CTRL=0x01000f01`, time=1776066042s (correct wall-clock) |
-| PTP CDC TX (250→322 MHz) | OK | CTRL[8]=1 (locked) |
-| PTP CDC RX (250→rx_serdes) | OK | CTRL[9]=1 (locked) |
-| Driver hwtstamp_set ioctl | OK | `tx_type=1 rx_filter=1` |
-| Driver TX tag allocation | OK | Tags 2-13+ delivered successfully |
-| QDMA H2C metadata delivery | OK | Tag reaches FPGA |
-| P2P pipeline tag threading | OK | Widened TUSER carries tag through slices |
-| CMAC PTP TX timestamping | OK | TX_GOOD matches, valid=1, timestamps returned |
-| TX TS FIFO (322→250 MHz) | OK | Tags match, timestamps delivered to socket |
-| Driver TX TS delivery | OK | `PTP TX TS DELIVER: tag=N hwtstamp=1776065608...` |
-| `phc_ctl set/get` | OK | Sets and reads correct wall-clock time |
-
-### RX Path (broken at lane-skew correction, fix pending rebuild)
+### TX Path (fully verified — delta_ms=0 for all tags)
 
 | Component | Status | Evidence |
 |-----------|--------|----------|
-| CMAC RX timestamping | Unknown | Cannot verify until pipeline fix deployed |
-| Lane-skew correction | **BUG** | Stage 1 overwrites valid timestamp with 0 |
-| Packet adapter RX sideband FIFO | OK (code) | FIFO plumbing verified correct |
-| P2P 322 MHz RX tuser passthrough | OK | TUSER_W=81, timestamp carried through slices |
-| P2P 250 MHz RX passthrough | OK | Direct wire passthrough of 80-bit ts |
-| QDMA C2H completion descriptor | OK (code) | Correctly packs ts_fifo_dout into DWORDs |
-| Driver RX timestamp extraction | OK | `sec=cmpl.ts_raw_hi, ns=cmpl.ts_raw_lo & 0x3FFFFFFF` |
+| PTP master clock (250 MHz, 4ns/tick) | OK | Correct wall-clock time, rate = 1.000 s/s |
+| PTP CDC TX (250→322 MHz) | OK | TX DIAG delta_ms=0 for tags 2-43 |
+| adjfine (PERIOD registers) | OK | Rate changes correctly |
+| adjtime (gettime+add+settime) | OK | Applied correctly |
+| QDMA H2C metadata tag delivery | OK | Tag reaches FPGA |
+| P2P pipeline tuser threading | OK | TUSER_W=17 (TX), 81 (RX) |
+| CMAC PTP TX timestamping | OK | TX_GOOD matches, valid timestamps returned |
+| TX TS FIFO (322→250 MHz) | OK | Tags match, timestamps delivered |
+| Driver TX TS poll (on-demand) | OK | Workqueue kicks from alloc_tx_tag |
 
----
+### RX Path
 
-## FPGA (open-nic-shell) -- FULLY IMPLEMENTED
+| Component | Status | Evidence |
+|-----------|--------|----------|
+| CMAC RX timestamping | OK | Valid sec/ns values in rx_ptp_tstamp_out |
+| ctl_rx_systemtimerin clock domain | **FIXED (0x0200)** | Now uses ptp_time in txusrclk2 domain |
+| SOP beat tuser timestamp | **FIXED (0x0201, pending rebuild)** | Mux raw ts on SOP to avoid 2-cycle stale |
+| Lane-skew correction pipeline | OK | Correctly computes ±60ns correction (bypassed on SOP for tuser) |
+| Packet adapter RX sideband FIFO | OK | 80-bit async FIFO 322→250 MHz |
+| P2P 322 MHz RX tuser passthrough | OK | TUSER_W=81 |
+| QDMA C2H completion descriptor | OK | 16B completion with timestamp |
+| Driver RX timestamp extraction | OK | Correct sec/ns from completion |
 
-All source files present and structurally complete.
-
-### New `src/ptp_subsystem/` directory
-
-| File | Status | Purpose |
-|------|--------|---------|
-| `ptp_clock.v` | Done | Master 96-bit PTP clock (250 MHz, 4 ns/tick) |
-| `ptp_clock_cdc.v` | Done | Phase-locked CDC from 250 MHz to 322 MHz / rx_serdes_clk |
-| `ptp_subsystem.sv` | Done | Top-level: master clock, per-port CDC (TX+RX), TX TS FIFOs, register bank |
-| `ptp_subsystem_register.sv` | Done | AXI-Lite register file with CDC lock status at CTRL[11:8] |
-
-### CMAC subsystem changes
+### Driver Status
 
 | Change | Status |
 |--------|--------|
-| 15 TCL files: `CONFIG.ENABLE_TIME_STAMPING {1}` | Done |
-| `cmac_subsystem_cmac_wrapper.sv`: PTP ports, rx_serdes_clk exposed | Done |
-| `cmac_subsystem.sv`: RX TS capture + lane-skew correction (2-stage pipeline) | Done (bug #7 fix applied) |
+| PTP hot-path logging → dev_dbg | Done |
+| Diagnostic udelays removed (110μs → 5μs) | Done (remove 5μs after verification) |
+| PTP workqueue on-demand | Done |
+| TX TS poll timeout 10s → 100ms | Done |
+| RX DIAG (delta_ms + gap_ms) | Temporary — remove after verification |
+| TX DIAG (delta_ms) | Temporary — remove after verification |
 
-### Datapath changes
+### Ping Latency
 
-| Change | Status |
-|--------|---------|
-| `packet_adapter_rx.sv`: Sideband xpm_fifo_async (80-bit, 322→250 MHz) | Done |
-| `packet_adapter_tx.sv`: Sideband xpm_fifo_async (16-bit, 250→322 MHz) | Done |
-| `plugin/p2p/p2p_322mhz.sv`: TUSER_W=17 (TX), TUSER_W=81 (RX) | Done |
-| `plugin/p2p/p2p_250mhz.sv`: PTP tag in tuser[47:32] | Done (single-QDMA only) |
+| Before cleanup | After cleanup |
+|---------------|--------------|
+| avg 8ms, max 26ms | avg 0.9ms, min 112μs |
+
+Cause: dev_info printk on serial console + unconditional 1ms workqueue polling.
+
+### Timing Closure (0x0200 build, 2026-04-15)
+
+| Clock domain | WNS (ns) | Failing | Notes |
+|-------------|----------|---------|-------|
+| txoutclk_out[0] (CMAC) | **Passing** | 0 | Fixed by SLR2 pblock widening |
+| axis_aclk_0 (QDMA 250MHz) | -0.134 | 60 | QDMA internal, functional |
+| txoutclk_out[0]_2 (PCIe) | -0.032 | 2 | QDMA internal |
+| rxoutclk_out[0] (RX SerDes) | +0.771 | 0 | Clean |
 
 ---
 
-## Driver (open-nic-driver) -- COMPLETE
+## FPGA Bitstream Version Register
 
-| File | Status | What it does |
-|------|--------|--------------|
-| `onic_ptp.h` | Done | Register offsets, TX TS FIFO macros |
-| `onic_ptp.c` | Done | adjfine, adjtime, gettime64, settime64, TX TS poll + delivery |
-| `onic_netdev.c` | Done | hwtstamp ioctl, TX tag injection, RX TS from completion descriptor |
-| `onic_ethtool.c` | Done | get_ts_info reporting HW+SW capabilities |
+Read via `CTRL[31:16]` at BAR2+0x18000. Driver logs at init: `PTP hardware detected, version 0xNNNN`.
+
+| Version | Date | Description |
+|---------|------|-------------|
+| 0x0100 | 2026-04-15 | Async FIFO RX CDC, separate ptp_time_rx (wrong clock domain) |
+| 0x0200 | 2026-04-16 | ctl_rx_systemtimerin = ptp_time (correct domain, stale SOP tuser) |
+| 0x0201 | 2026-04-16 | SOP-beat tuser uses rx_ptp_ts_raw — **built and tested**; plumbing works, servo does not converge due to timestamp jitter |
 
 ---
 
-## Test Setup (2026-04-13)
+## Test Setup (2026-04-16)
 
 ### Physical Topology
 
 ```
-  desktop (AU200 FPGA, slave)       desktop-2 (Mellanox, master)
+  desktop-2 (AU200 FPGA, slave)     desktop (Mellanox, master)
   ┌──────────────────────┐         ┌──────────────────────┐
-  │  enp130s0f0          │──QSFP───│  enp97s0f0np0        │
+  │  enp1s0f0            │──QSFP───│  enp2s0np0           │
   │  PTP Slave           │ direct  │  PTP Master          │
   │  CMAC port 0         │ cable   │  ConnectX-5          │
-  │  /dev/ptp2           │         │  /dev/ptp2           │
-  │  00:0a:35:..         │         │  94:6d:ae:..         │
+  │  /dev/ptp4           │         │  /dev/ptp1           │
   └──────────────────────┘         └──────────────────────┘
+```
+
+### Reference (Mellanox-to-Mellanox, verified 2026-04-16)
+
+```
+ptp4l: master offset converges to <10 μs, path delay ~55 μs, servo stays in SLAVE
 ```
 
 ### Test Commands
 
 ```bash
-# Master (desktop-2):
-sudo ptp4l -i enp97s0f0np0 -H -2 --masterOnly=1 -m
+# Master (desktop):
+sudo ptp4l -i enp2s0np0 -H -2 --masterOnly=1 -m
 
-# Slave (desktop):
-sudo phc_ctl /dev/ptp2 set                                    # seed PHC from system clock
-sudo ptp4l -i enp130s0f0 -H -2 --slaveOnly=1 -m --step_threshold=1
-```
+# Slave (desktop-2):
+sudo phc_ctl /dev/ptp4 set
+sudo ptp4l -i enp1s0f0 -H -2 --slaveOnly=1 -m
 
-### Build Commands
-
-```bash
-# FPGA bitstream (from open-nic-shell/):
-./script/build_2cmac.sh
-# Delete cached CMAC IP if needed: rm -rf build/au200_2cmac_2pf/vivado_ip/cmac_usplus_{0,1}
-
-# Driver (from open-nic-driver/):
-make clean && make
-sudo rmmod onic; sudo insmod onic.ko
+# Verify bitstream version:
+dmesg | grep "PTP hardware detected"
+# Expected: version 0x0201
 ```
 
 ---
 
 ## Next Steps (Priority Order)
 
-1. **Rebuild FPGA bitstream** with `cmac_subsystem.sv` lane-skew pipeline fix (bug #7)
-2. **End-to-end ptp4l -H verification** — expect RX timestamps to be non-zero; servo should converge
-3. **Performance characterization** — measure offset/jitter vs SW timestamping baseline (~10-50 us)
-4. **Clean up debug prints** — remove temporary `dev_info` traces, restore 200ms TX TS poll timeout
-5. **Timing closure** — check WNS after rebuild (previous: -0.020 to -0.037 ns, marginal)
+1. **Isolate RX timestamp jitter source** — ILA capture of `rx_ptp_tstamp_out[79:0]` on the SOP beat at the CMAC boundary for 10 consecutive PTP Sync frames. Expected cadence is 1 s ± <100 ns. If those values jitter by µs, the CMAC is misconfigured; if clean, the jitter is introduced between CMAC and `m_axis_rx_tuser_ptp_ts`.
+2. **Verify TX reference plane** — confirm `tx_ptp_tstamp_out` from the CMAC is the SFD-on-wire time (vs enqueue time) and that both TX and RX stamps refer to the same pipeline stage. Check/configure CMAC PTP latency-adjust registers if a constant bias remains after jitter is fixed.
+3. **ptp4l `-l 7` per-message trace** — identify whether forward leg (t2−t1) or reverse leg (t4−t3) is the dominant noise contributor. This narrows RX vs TX without touching the FPGA.
+4. **Remove driver diagnostics** — once servo converges: RX DIAG, TX DIAG, the 5 µs udelay in `onic_xmit_frame`, and debug prints reduced to dev_dbg.
+5. **Clean up FPGA dead code** — `ptp_time_rx` port and residual async FIFO path in `ptp_subsystem.sv` (superseded by Bug #9 fix).
+6. **Measure steady-state accuracy** — once locked: offset jitter, path-delay stability, lock time from cold start, behavior under CMAC link flap.
+7. **Two-shell (FPGA↔FPGA) test** — once single-ended convergence is achieved against Mellanox, repeat against a second FPGA instance for wire-to-wire and round-trip latency measurement (see `docs/ptp_timestamping.md`).

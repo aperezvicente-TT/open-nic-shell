@@ -115,7 +115,11 @@ module ptp_subsystem_register #(
 );
 
   localparam C_ADDR_W = 14;  // 14 bits to cover 0x000-0x2FFF (global + 2 ports)
-  localparam VERSION  = 16'h0100;
+  // Bump on every bitstream rebuild. Read via CTRL[31:16] at BAR2+0x18000.
+  //   0x0100 — 2026-04-15: async FIFO RX CDC, separate ptp_time_rx
+  //   0x0200 — 2026-04-16: ctl_rx_systemtimerin = ptp_time (same as TX)
+  //   0x0201 — 2026-04-16: SOP-beat tuser uses raw CMAC ts (bypass 2-cycle pipeline stale)
+  localparam VERSION  = 16'h0201;
 
   // ---------------------------------------------------------------------------
   // Global register addresses

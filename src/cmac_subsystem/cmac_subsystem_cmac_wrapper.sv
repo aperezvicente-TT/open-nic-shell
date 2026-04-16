@@ -456,8 +456,10 @@ module cmac_subsystem_cmac_wrapper #(
       .tx_preamblein                       (tx_preamblein),
 
       // PTP timestamping
+      // NOTE: rx_clk = txusrclk2 (same clock for both TX and RX user interface),
+      // so ctl_rx_systemtimerin is in the TX clock domain, not gt_rxusrclk2.
       .ctl_tx_systemtimerin                (ptp_time),
-      .ctl_rx_systemtimerin                (ptp_time_rx),
+      .ctl_rx_systemtimerin                (ptp_time),
       .tx_ptp_1588op_in                    (tx_ptp_1588op_in),
       .tx_ptp_tag_field_in                 (tx_ptp_tag_in),
       .tx_ptp_tstamp_out                   (tx_ptp_ts),
@@ -780,8 +782,10 @@ module cmac_subsystem_cmac_wrapper #(
       .tx_preamblein                       (tx_preamblein),
 
       // PTP timestamping
+      // NOTE: rx_clk = txusrclk2 (same clock for both TX and RX user interface),
+      // so ctl_rx_systemtimerin is in the TX clock domain, not gt_rxusrclk2.
       .ctl_tx_systemtimerin                (ptp_time),
-      .ctl_rx_systemtimerin                (ptp_time_rx),
+      .ctl_rx_systemtimerin                (ptp_time),
       .tx_ptp_1588op_in                    (tx_ptp_1588op_in),
       .tx_ptp_tag_field_in                 (tx_ptp_tag_in),
       .tx_ptp_tstamp_out                   (tx_ptp_ts),

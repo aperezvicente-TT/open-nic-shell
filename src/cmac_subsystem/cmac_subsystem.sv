@@ -261,7 +261,17 @@ module cmac_subsystem #(
   end
 
   // Pack RX tuser: {ptp_ts[79:0], tuser_err} = 81 bits
-  assign axis_cmac_rx_tuser_wide = {rx_ptp_ts_held, axis_cmac_rx_tuser_err};
+  //
+  // On the SOP beat, use the raw CMAC timestamp directly — rx_ptp_ts_held
+  // is 2 cycles stale (from the lane-skew pipeline) so the SOP beat's tuser
+  // would carry the PREVIOUS packet's timestamp if we used the held value.
+  // The raw timestamp is valid on the SOP beat and skips only the ±60 ns
+  // lane-skew correction, which is negligible for PTP.
+  // On non-SOP beats, the held value is used (doesn't matter — downstream
+  // captures only on SOP).
+  wire [79:0] rx_ptp_ts_for_tuser = (axis_cmac_rx_tvalid && !rx_in_packet) ?
+                                     rx_ptp_ts_raw : rx_ptp_ts_held;
+  assign axis_cmac_rx_tuser_wide = {rx_ptp_ts_for_tuser, axis_cmac_rx_tuser_err};
 
   // Reset is clocked by the 125MHz AXI-Lite clock
   generic_reset #(

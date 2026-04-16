@@ -98,71 +98,37 @@ set_false_path -from [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_ins
 set_false_path -to [get_cells -quiet -hier -filter {NAME =~ *ptp_subsystem_inst/gen_port[*].cmac_rst_sync1_reg}]
 
 # ---------------------------------------------------------------------------
-# PTP RX CDC timing constraints (axis_aclk -> rx_serdes_clk)
+# PTP RX timestamp synchronizer constraints (cmac_clk -> rx_serdes_clk)
 #
-# A second ptp_clock_cdc per port crosses from axis_aclk (250 MHz) to
-# rx_serdes_clk[0] (322 MHz recovered RX clock).  Same CDC structure as
-# the TX path, so the same constraint pattern applies.
+# The RX timestamp is now derived from the TX CDC output and crossed to
+# rx_serdes_clk via a 2-stage register synchronizer (rx_ts_sync1/2).
+# Both clocks are mesochronous ~322 MHz from different sources.
 # ---------------------------------------------------------------------------
 
-# CDC max-delay: axis_aclk <-> gt_rxusrclk2 (RX SerDes clock)
-# gt_rxusrclk2 is the GT recovered RX clock (= rx_serdes_clk[0] internally).
-# Try both the net name and the auto-generated clock name.
-foreach axis_aclk [get_clocks -of_object [get_nets axis_aclk*]] {
-    foreach rx_sclk [get_clocks -quiet -of_object [get_nets -quiet -hier gt_rxusrclk2*]] {
-        set_max_delay -datapath_only -from $axis_aclk -to $rx_sclk 4.000
-        set_max_delay -datapath_only -from $rx_sclk -to $axis_aclk 3.103
-    }
-}
-
-# ASYNC_REG for RX CDC synchronizer stages
-set_property -quiet ASYNC_REG TRUE [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_rx_inst/src_sync_sync1_reg_reg}]
-set_property -quiet ASYNC_REG TRUE [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_rx_inst/src_sync_sync2_reg_reg}]
-set_property -quiet ASYNC_REG TRUE [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_rx_inst/src_sync_sync3_reg_reg}]
-set_property -quiet ASYNC_REG TRUE [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_rx_inst/src_phase_sync_sync1_reg_reg}]
-set_property -quiet ASYNC_REG TRUE [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_rx_inst/src_phase_sync_sync2_reg_reg}]
-set_property -quiet ASYNC_REG TRUE [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_rx_inst/src_phase_sync_sync3_reg_reg}]
-set_property -quiet ASYNC_REG TRUE [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_rx_inst/src_sync_sample_sync1_reg_reg}]
-set_property -quiet ASYNC_REG TRUE [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_rx_inst/src_sync_sample_sync2_reg_reg}]
-set_property -quiet ASYNC_REG TRUE [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_rx_inst/src_sync_sample_sync3_reg_reg}]
-set_property -quiet ASYNC_REG TRUE [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_rx_inst/dest_sync_sample_sync1_reg_reg}]
-set_property -quiet ASYNC_REG TRUE [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_rx_inst/dest_sync_sample_sync2_reg_reg}]
-set_property -quiet ASYNC_REG TRUE [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_rx_inst/dest_sync_sample_sync3_reg_reg}]
-set_property -quiet ASYNC_REG TRUE [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_rx_inst/sample_update_sync1_reg_reg}]
-set_property -quiet ASYNC_REG TRUE [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_rx_inst/sample_update_sync2_reg_reg}]
-set_property -quiet ASYNC_REG TRUE [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_rx_inst/sample_update_sync3_reg_reg}]
-
-# False paths for RX CDC toggle synchronizer first stages
-set_false_path -to [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_rx_inst/src_sync_sync1_reg_reg}]
-set_false_path -to [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_rx_inst/src_phase_sync_sync1_reg_reg}]
-set_false_path -to [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_rx_inst/src_sync_sample_sync1_reg_reg}]
-set_false_path -to [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_rx_inst/dest_sync_sample_sync1_reg_reg}]
-set_false_path -to [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_rx_inst/sample_update_sync1_reg_reg}]
-
-# Data capture registers (protected by toggle handshake)
-set_false_path -from [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_rx_inst/src_ts_s_capt_reg_reg*}]
-set_false_path -from [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_rx_inst/src_ts_ns_capt_reg_reg*}]
-set_false_path -from [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_rx_inst/src_ts_step_capt_reg_reg}]
-set_false_path -from [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_rx_inst/sample_acc_out_reg_reg*}]
-
-# PTP RX reset synchronizer: async reset crossing to rx_serdes_clk domain
-set_false_path -to [get_cells -quiet -hier -filter {NAME =~ *ptp_subsystem_inst/gen_port[*].rx_serdes_rst_sync1_reg}]
-
-# False-path async reset (PRE) to rx_serdes_rst synchronizer stages
-# The reset crosses from QDMA 125MHz -> rxoutclk 322MHz; the synchronizer
-# handles metastability, so recovery/removal checks are not meaningful.
-set_false_path -to [get_pins -quiet -hier -filter {NAME =~ *ptp_subsystem_inst/gen_port[*].rx_serdes_rst_sync*_reg/PRE}]
+# The RX timestamp async FIFO (xpm_fifo_async) handles its own CDC constraints
+# internally — no additional timing exceptions needed for the data path.
+# The FIFO reset comes from axis_rst (250 MHz domain) and is handled by
+# the XPM FIFO's built-in reset synchronizer.
 
 # ---------------------------------------------------------------------------
 # Placement constraints for packet adapter CDC FIFOs
+#
+# CMAC port 0 GT channels are in SLR2 (clock regions Y8-Y11).  The packet
+# adapter TX/RX paths run at 322 MHz (txoutclk_out[0], 3.103 ns period).
+# All logic and BRAMs must stay within SLR2 to avoid unregistered SLR
+# crossings that consume ~1.4 ns of the 3.1 ns budget.
+#
+# Previous pblocks started at Y9, missing the bottom row of SLR2 (Y8).
+# This caused Vivado to spill FIFO BRAMs across the SLR2/SLR1 boundary,
+# creating the dominant timing violations (WNS -0.465 ns, 1281 endpoints).
 # ---------------------------------------------------------------------------
 create_pblock pblock_packet_adapter_tx
 add_cells_to_pblock [get_pblocks pblock_packet_adapter_tx] [get_cells -quiet {cmac_port*.packet_adapter_inst/tx_inst}]
-resize_pblock [get_pblocks pblock_packet_adapter_tx] -add {CLOCKREGION_X0Y9:CLOCKREGION_X2Y11}
+resize_pblock [get_pblocks pblock_packet_adapter_tx] -add {CLOCKREGION_X0Y8:CLOCKREGION_X5Y11}
 
 create_pblock pblock_packet_adapter_rx
 add_cells_to_pblock [get_pblocks pblock_packet_adapter_rx] [get_cells -quiet {cmac_port*.packet_adapter_inst/rx_inst}]
-resize_pblock [get_pblocks pblock_packet_adapter_rx] -add {CLOCKREGION_X3Y9:CLOCKREGION_X5Y11}
+resize_pblock [get_pblocks pblock_packet_adapter_rx] -add {CLOCKREGION_X0Y8:CLOCKREGION_X5Y11}
 
 # ---------------------------------------------------------------------------
 # Prevent SRL conversion on CDC pipeline registers — keeps them as FFs
@@ -172,8 +138,7 @@ set_property SHREG_EXTRACT NO [get_cells -quiet -hier -filter {NAME =~ *packet_a
 set_property SHREG_EXTRACT NO [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc*}]
 
 # ---------------------------------------------------------------------------
-# Note: PTP RX CDC (ptp_clock_cdc_rx_inst) and lane skew pipeline registers
-# are left unconstrained — Vivado will place them near their clock sources
-# (gt_rxusrclk2 / cmac_clk) automatically.  If timing fails on these paths,
-# add a pblock to colocate them with the CMAC region.
+# Note: PTP RX timestamp synchronizer (rx_ts_sync1/2) and lane skew pipeline
+# registers are left without placement constraints — Vivado will place them
+# near their clock sources (gt_rxusrclk2 / cmac_clk) automatically.
 # ---------------------------------------------------------------------------

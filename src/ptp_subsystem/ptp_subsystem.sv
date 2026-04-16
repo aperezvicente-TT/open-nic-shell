@@ -234,36 +234,87 @@ module ptp_subsystem #(
       };
 
       // -----------------------------------------------------------------------
-      // RX PTP timestamp: resynchronize TX CDC output to rx_serdes_clk
+      // RX PTP timestamp: cross TX CDC output to rx_serdes_clk via async FIFO
       //
-      // The separate ptp_clock_cdc for the RX path accumulates ~50 PPM drift
-      // relative to the TX CDC, despite both tracking the same master clock.
-      // The recovered rx_serdes_clk jitter degrades the RX CDC's PI tracking,
-      // producing timestamps hundreds of ms behind the TX CDC.
+      // The separate ptp_clock_cdc for the RX path accumulated ~50 PPM drift
+      // relative to the TX CDC.  A simple 2-stage register synchronizer
+      // corrupts the 80-bit timestamp due to multi-bit coherence failure
+      // (different bits captured from different source clock cycles).
       //
-      // Fix: use the TX CDC's 80-bit output (cmac_clk domain) and cross it
-      // to rx_serdes_clk with a 2-stage synchronizer.  cmac_clk and
-      // rx_serdes_clk are mesochronous (~322 MHz from different sources), so
-      // metastability can only affect LSBs — worst case ~6 ns jitter, well
-      // within the CMAC's own timestamp granularity.  The CMAC registers
-      // ctl_rx_systemtimerin internally on rx_serdes_clk[0] (PG203), so
-      // one extra register stage here gives the same 2-deep synchronizer
-      // depth that the CMAC already expects.
+      // Fix: use an async FIFO (xpm_fifo_async) to transfer the 80-bit
+      // timestamp atomically from cmac_clk to rx_serdes_clk.  Both clocks
+      // are ~322 MHz so the FIFO stays balanced.  FWFT mode ensures the
+      // read port always presents the most recent available timestamp.
+      // Worst-case latency: ~3 clock cycles (~9 ns), well within the
+      // CMAC's 62 ns lane-skew jitter budget.
       // -----------------------------------------------------------------------
-      (* ASYNC_REG = "TRUE" *)
-      reg [79:0] rx_ts_sync1, rx_ts_sync2;
+      wire        rx_ts_fifo_full;
+      wire        rx_ts_fifo_empty;
+      wire [79:0] rx_ts_fifo_dout;
+
+      xpm_fifo_async #(
+        .FIFO_MEMORY_TYPE   ("distributed"),
+        .FIFO_WRITE_DEPTH   (16),
+        .WRITE_DATA_WIDTH   (80),
+        .READ_DATA_WIDTH    (80),
+        .READ_MODE          ("fwft"),
+        .FIFO_READ_LATENCY  (0),
+        .FULL_RESET_VALUE   (0),
+        .USE_ADV_FEATURES   ("0000"),
+        .CDC_SYNC_STAGES    (2),
+        .DOUT_RESET_VALUE   ("0"),
+        .ECC_MODE           ("no_ecc"),
+        .PROG_EMPTY_THRESH  (3),
+        .PROG_FULL_THRESH   (13),
+        .RD_DATA_COUNT_WIDTH(4),
+        .WR_DATA_COUNT_WIDTH(4),
+        .WAKEUP_TIME        (0),
+        .RELATED_CLOCKS     (0)
+      ) rx_ts_fifo_inst (
+        .rst           (axis_rst),
+        .wr_clk        (cmac_clk[gi]),
+        .wr_en         (~rx_ts_fifo_full),
+        .din           (ptp_time_cmac[80*gi +: 80]),
+        .full          (rx_ts_fifo_full),
+        .overflow      (),
+        .wr_rst_busy   (),
+        .prog_full     (),
+        .wr_data_count (),
+        .almost_full   (),
+        .wr_ack        (),
+
+        .rd_clk        (rx_serdes_clk[gi]),
+        .rd_en         (~rx_ts_fifo_empty),
+        .dout          (rx_ts_fifo_dout),
+        .empty         (rx_ts_fifo_empty),
+        .underflow     (),
+        .rd_rst_busy   (),
+        .prog_empty    (),
+        .rd_data_count (),
+        .almost_empty  (),
+        .data_valid    (),
+
+        .sleep         (1'b0),
+        .injectsbiterr (1'b0),
+        .injectdbiterr (1'b0),
+        .sbiterr       (),
+        .dbiterr       ()
+      );
+
+      // Hold last valid timestamp when FIFO is empty (e.g., during reset)
+      reg [79:0] rx_ts_held;
       always @(posedge rx_serdes_clk[gi]) begin
-        rx_ts_sync1 <= ptp_time_cmac[80*gi +: 80];
-        rx_ts_sync2 <= rx_ts_sync1;
+        if (~rx_ts_fifo_empty)
+          rx_ts_held <= rx_ts_fifo_dout;
       end
 
-      assign ptp_time_cmac_rx[80*gi +: 80] = rx_ts_sync2;
+      assign ptp_time_cmac_rx[80*gi +: 80] = rx_ts_held;
 
       // Keep CDC status signals valid for the register interface
-      assign cdc_rx_ts_96[gi]  = 96'd0;  // unused — RX now derived from TX CDC
+      assign cdc_rx_ts_96[gi]   = 96'd0;
       assign cdc_rx_ts_step[gi] = 1'b0;
       assign cdc_rx_pps[gi]     = 1'b0;
-      assign cdc_rx_locked[gi]  = cdc_locked[gi]; // mirror TX lock status
+      assign cdc_rx_locked[gi]  = cdc_locked[gi];
 
       // -----------------------------------------------------------------------
       // TX Timestamp Async FIFO: cmac_clk[gi] (322 MHz) -> axis_aclk (250 MHz)
