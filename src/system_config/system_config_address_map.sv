@@ -78,9 +78,9 @@
 // --------------------------------------------------
 //    0x18000  |  0x1AFFF  |  M12  PTP subsystem
 // --------------------------------------------------
-//   0x200000  |  0x3FFFFF |  M13  ERNIC0 (CMAC0/QSFP0)
+//   0x800000  |  0x9FFFFF |  M13  ERNIC0 (CMAC0/QSFP0)  2 MB per PG332 v4.3 Tbl 9
 // --------------------------------------------------
-//   0x600000  |  0x7FFFFF |  M14  ERNIC1 (CMAC1/QSFP1)
+//   0xA00000  |  0xBFFFFF |  M14  ERNIC1 (CMAC1/QSFP1)  2 MB
 // --------------------------------------------------
 
 `include "open_nic_shell_macros.vh"
@@ -359,8 +359,8 @@ module system_config_address_map #(
 `ifdef __rdma_enabled__
   localparam C_BOX1_BASE_ADDR  = 32'h500000; // 20 bits (shifted for dual ERNIC)
   localparam C_BOX0_BASE_ADDR  = 32'h400000; // 20 bits (shifted for dual ERNIC)
-  localparam C_RDMA0_BASE_ADDR = 32'h200000; // 21 bits (2MB ERNIC0)
-  localparam C_RDMA1_BASE_ADDR = 32'h600000; // 21 bits (2MB ERNIC1)
+  localparam C_RDMA0_BASE_ADDR = 32'h800000; // 21 bits (2MB ERNIC0) - per PG332 v4.3 Tbl 9
+  localparam C_RDMA1_BASE_ADDR = 32'hA00000; // 21 bits (2MB ERNIC1)
 `else
   localparam C_BOX1_BASE_ADDR  = 32'h200000; // 20 bits
   localparam C_BOX0_BASE_ADDR  = 32'h100000; // 20 bits

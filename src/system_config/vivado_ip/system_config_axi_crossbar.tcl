@@ -62,13 +62,19 @@ set_property -dict {
 set_property CONFIG.NUM_SI [expr {$num_qdma}] [get_ips $axi_crossbar]
 
 if {[info exists rdma] && $rdma} {
+    # ERNIC v4.2 requires 2 MB AXI-Lite window per instance (PG332 Tbl 9).
+    # 16 MB BAR2 layout keeps CMS at 0x300000 (no driver impact):
+    #   M08 BOX1 @ 0x500000  unchanged
+    #   M09 BOX0 @ 0x400000  unchanged
+    #   M13 ERNIC0 @ 0x800000 (2 MB)  — moved from 0x200000/256KB
+    #   M14 ERNIC1 @ 0xA00000 (2 MB)  — moved from 0x600000/256KB
     set_property -dict {
         CONFIG.NUM_MI {15}
         CONFIG.M08_A00_BASE_ADDR {0x0000000000500000}
         CONFIG.M09_A00_BASE_ADDR {0x0000000000400000}
-        CONFIG.M13_A00_BASE_ADDR {0x0000000000200000}
-        CONFIG.M13_A00_ADDR_WIDTH {18}
-        CONFIG.M14_A00_BASE_ADDR {0x0000000000600000}
-        CONFIG.M14_A00_ADDR_WIDTH {18}
+        CONFIG.M13_A00_BASE_ADDR {0x0000000000800000}
+        CONFIG.M13_A00_ADDR_WIDTH {21}
+        CONFIG.M14_A00_BASE_ADDR {0x0000000000A00000}
+        CONFIG.M14_A00_ADDR_WIDTH {21}
     } [get_ips $axi_crossbar]
 }
