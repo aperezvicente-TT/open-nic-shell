@@ -40,8 +40,11 @@ set_property -dict {
     CONFIG.PF1_MSIX_CAP_TABLE_SIZE_qdma {01F}
     CONFIG.PF2_MSIX_CAP_TABLE_SIZE_qdma {01F}
     CONFIG.PF3_MSIX_CAP_TABLE_SIZE_qdma {01F}
-    CONFIG.dma_intf_sel_qdma {AXI_Stream_with_Completion}
-    CONFIG.en_axi_mm_qdma {false}
+    CONFIG.dma_intf_sel_qdma {AXI_MM_and_AXI_Stream_with_Completion}
+    CONFIG.en_axi_mm_qdma {true}
+    CONFIG.en_bridge_slv {true}
+    CONFIG.axibar_highaddr_0 {0x000000FFFFFFFFFF}
+    CONFIG.axibar_notranslate {false}
     CONFIG.SYS_RST_N_BOARD_INTERFACE {pcie_perstn}
     CONFIG.PCIE_BOARD_INTERFACE {pci_express_x16}
     CONFIG.xlnx_ref_board {AU200}
