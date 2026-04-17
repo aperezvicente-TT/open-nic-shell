@@ -154,7 +154,9 @@ if (!(calib & 0x1)) { fprintf(stderr, "DDR4 NOT CALIBRATED — bail\n"); exit(1)
 
 ### Tier 1a — CSR bring-up (≈2 days)
 
-Items 1, 5-partial, 6. Produces a bitstream where the host can reach ERNIC GCSR and QCSR via BAR2, program MAC/IP/PD context, and confirm NUM_QP=32 in XRNICCONF readback. **No DMA path.** Phase 2 loopback test doesn't work yet.
+Items 1, **1b (QDMA BAR2 only)**, 5-partial, 6. Produces a bitstream where the host can reach ERNIC GCSR and QCSR via BAR2, program MAC/IP/PD context, and confirm NUM_QP=32 in XRNICCONF readback. **No DMA path.** Phase 2 loopback test doesn't work yet.
+
+**Correction (2026-04-16)**: `pf0_bar2_size_qdma 16` was originally listed under Item 2 (Tier 1b). It's actually a prerequisite for Item 1 — without it, ERNIC at `0x800000` is outside the host-visible BAR. Moved to Tier 1a as sub-item 1b. Fixed in commit `55cb407`.
 
 **Success criterion**: `phase1_csr_bringup` runs end-to-end; XRNICCONF round-trips with EN=1 latching and NUM_QP[15:8]=`0x20`; PD table + MR entries programmable; MAC/IPv4 configuration registers round-trip.
 
