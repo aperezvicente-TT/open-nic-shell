@@ -1,10 +1,45 @@
 # RecoNIC ERNIC Integration — Status Tracker
 
-Last updated: 2026-04-16
+Last updated: 2026-04-17
 
 ## Summary
 
-Dual Xilinx ERNIC (RoCEv2 RDMA) integration onto open-nic-shell — one ERNIC per CMAC port. Implementation steps 1–9 landed; first bitstream (`au200_2cmac_2pf_rdma`) loaded on `0000:82:00.0/.1`. **2026-04-16 RTL audit revealed a blocker** for end-to-end RDMA: QDMA AXI-MM bridge is disabled and ERNIC's host-memory master dead-ends. See "RTL Blocker" section below. Phases 0 (ERNIC liveness probe) and 1 (CSR-only bring-up) are still viable on the current bitstream and are the next milestones — see `phase0_1_plan.md`.
+Dual Xilinx ERNIC (RoCEv2 RDMA) integration onto open-nic-shell — one ERNIC per CMAC port. **Tier 1a COMPLETE 2026-04-17**: rebuilt bitstream `au200_2cmac_2pf_rdma_v2` (ERNIC 2 MB crossbar windows, BAR2 = 16 MB, PG332 v4.3 register map in libreconic) loaded on `0000:01:00.0` (desktop-2). Phase 1 CSR bring-up passes 27/27 on both ERNIC0 and ERNIC1. Tier 1b (QDMA AXI-MM bridge + DMA buffer wiring) is the next milestone before Phase 2 RDMA WRITE loopback. See `tier1a_validation_runbook.md` for reproduction, `phase2_rtl_rebuild_plan.md` for scope history.
+
+## Tier 1a — COMPLETE 2026-04-17
+
+Validated on desktop-2, BDF `0000:01:00.0`, bitstream `au200_2cmac_2pf_rdma_v2`.
+
+| Gate | Result |
+|---|---|
+| BAR2 size (lspci Region 2) | **16 M** on PF0 and PF1 ✓ |
+| ERNIC0 GCSR reachable (BAR2+0x900000) | ✓ |
+| ERNIC1 GCSR reachable (BAR2+0xb00000) | ✓ |
+| Phase 1 CSR bring-up ERNIC0 | **27 / 27** ✓ |
+| Phase 1 CSR bring-up ERNIC1 | **27 / 27** ✓ |
+
+### What changed since 2026-04-16
+
+- RTL: `system_config_axi_crossbar` ERNIC0/1 windows expanded 256 KB → 2 MB (PG332 v4.3 Table 9 footprint).
+- QDMA TCL: `pf0_bar2_size_qdma` 4 → 16 (MB) — ERNIC1 now inside host-visible BAR.
+- libreconic `reconic_reg.h`: offsets rewritten against PG332 v4.3 (GCSR 0x100000, QCSR 0x180000, PDT stride 0x100).
+- Test `phase1_csr_bringup.c`: two register-map corrections (both userspace-only, no re-flash needed):
+  - **XRNICCONF NUM_QP is software-written config, not IP-reported capability**. Test 1 now writes NUM_QP[15:8]=0x20, reads back, restores — consistent with libreconic's `(udp_sport<<16)|(num_qp<<8)|config_8bit` packing at `rdma_api.c:131`.
+  - **QPADVCONFi bit[6] is reserved per PG332 v4.3** (DSCP/ECN gap inside the traffic_class field at [7:0]). Expected read-back of 0x5555_5555 is 0x5555_**15**55.
+
+### Artifacts
+
+- `phase1_ernic0.log` — ERNIC0 run, 27/27
+- `phase1_ernic1.log` — ERNIC1 run, 27/27 (console captured, not tee'd)
+- `rdma_test/phase1_csr_bringup.c` — idempotent; re-runnable without rebuilding bitstream
+
+### What Tier 1a does NOT prove
+
+Every Phase 1 test is save-write-restore against AXI-Lite. It confirms the register plane is decoded, the IP is not held in reset, and the 2 MB crossbar windows are live. It does **not** exercise the QDMA s_axib path, CMAC RoCEv2 traffic, MIG DDR4 calibration, or any DMA buffer register (SQBAi/RQBAi/CQBAi/DATBUFBA). Those are Tier 1b / Phase 2.
+
+---
+
+## RTL Blocker discovered 2026-04-16 — Items 1/1b/5 resolved in Tier 1a; Items 2/3/4 remaining
 
 ## RTL Blocker discovered 2026-04-16
 
@@ -113,8 +148,8 @@ Phase 2 was already blocked. The new blocker (ERNIC window size) is additive, no
 | 10 | First synthesis + bitstream | **DONE** | `au200_2cmac_2pf_rdma` loaded on 0000:82:00.0/.1, driver brings up netdevs |
 | 11 | RTL audit | **DONE 2026-04-16** | Found blocker (see above): QDMA AXI-MM disabled, `axi_sys_mem_mux` dead-end, BAR2=4MB |
 | 12 | Phase 0 — ERNIC0 liveness probe | **DONE (misleading pass; see Closure)** | Closed 2026-04-16 — probe was hitting PD table, not GCSR. ERNIC crossbar window too small for v4.2. |
-| 13 | Phase 1 — CSR-only libreconic bring-up | **BLOCKED** | Blocked by new finding: ERNIC AXI-Lite window is 256 KB, GCSR/QCSR at 0x100000/0x180000 unreachable. Requires RTL rebuild (see `phase2_rtl_rebuild_plan.md`). |
-| 14 | Phase 2 — RDMA WRITE loopback | **BLOCKED** | Requires RTL rebuild (QDMA bridge + BAR 8MB). Cannot proceed on current bitstream. |
+| 13 | Phase 1 — CSR-only libreconic bring-up | **DONE 2026-04-17** | Tier 1a v2 bitstream passes 27/27 on both ERNICs (`phase1_ernic0.log`). |
+| 14 | Phase 2 — RDMA WRITE loopback | **BLOCKED** | Tier 1b rebuild required: QDMA `en_axi_mm_qdma`/`en_bridge_slv`, wire `axi_sys_mem_mux` → QDMA `s_axib`, expose `s_axib_*` ports, populate DMA buffer regs in libreconic (Items 2/3/4 + 5-remaining). |
 
 ## File Inventory
 
