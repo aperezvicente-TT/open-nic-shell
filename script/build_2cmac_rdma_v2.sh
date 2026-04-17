@@ -11,6 +11,7 @@ vivado -mode batch -source build.tcl -tclargs \
     -board       au200 \
     -tag         2cmac_2pf_rdma_v2 \
     -overwrite   0 \
+    -rebuild     1 \
     -synth_ip    1 \
     -impl        1 \
     -post_impl   1 \
