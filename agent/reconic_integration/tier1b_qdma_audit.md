@@ -129,3 +129,212 @@ Reference:
 
 PG302 on disk (check this path exists):
 - `/home/alex/Downloads/XilinxAmdDownloads/` (PG332 was found here for ERNIC; PG302 for QDMA should be nearby if downloaded)
+
+---
+
+# Session 2 addendum — 2026-04-17 (late)
+
+## TL;DR
+PG302 read end-to-end. Q1–Q4 all answered. TCL narrowed (working-tree edit, **not committed yet**). RTL graft planned to the exact line but **paused** on a directionality question that the next session must resolve before writing RTL.
+
+## What was done
+- Downloaded PG302 v5.1 (Nov 2025) to `/home/alex/Downloads/XilinxAmdDownloads/xilinx-general-docs/pcie/pg302-qdma-en-us-5.1.pdf`.
+- Converted to searchable markdown: `pg302-qdma.md` (10,324 lines) + `pg302-images/` (77 PNGs). Same sibling convention as PG332.
+- Grepped RecoNIC `open_nic_shell.sv` for `m_axi_*` routing → **RecoNIC wires `m_axi_*` into a 4:1 dev_mem crossbar as a crossbar master** (RecoNIC: `open_nic_shell.sv:2535-2569`, into `axi_4to1_interconnect_to_dev_mem`). Answers audit Q1.
+- TCL working-tree edit at `src/qdma_subsystem/vivado_ip/qdma_no_sriov_au200.tcl`:
+  - `dma_intf_sel_qdma` → `AXI_Stream_with_Completion` (reverted from MM+ST)
+  - `en_axi_mm_qdma` → `false` (reverted from true)
+  - `en_bridge_slv {true}` kept
+  - `axibar_highaddr_0 {0x000000FFFFFFFFFF}` kept
+  - `axibar_notranslate {false}` kept
+  - `pf[0-3]_bar2_size_qdma {16}` kept (Tier 1a still needs 16 MB for ERNIC1 @ 0xa00000)
+  - **Not yet committed** — waiting to batch with graft.
+
+## Q1–Q4 final answers (from PG302 + RecoNIC evidence)
+
+| Q | Answer |
+|---|---|
+| **Q1** (where does `m_axi_*` point?) | N/A — drop `en_axi_mm_qdma` means `m_axi_*` doesn't exist. Deferred to future "use DMA engines" decision. |
+| **Q2** (`s_axil_csr_*` fabric-side prog?) | **Tie off / don't enable.** PG302 p163: this is for runtime Bridge-register + DMA-CSR access from fabric. `axibar_highaddr_0` is programmed statically at IP-gen so we don't need it. |
+| **Q3** (bypass tie-offs?) | **Not needed** — `h2c_byp_in_mm_*` / `c2h_byp_in_mm_*` only exist when MM DMA + descriptor bypass are both enabled. We dropped MM DMA. |
+| **Q4** (narrower IP config?) | **YES.** `en_bridge_slv` is a **separate IP toggle from `en_axi_mm_qdma`** (PG302 p162 Figure 27 — "Bridge Interface options" and "DMA Interface options" are independent panels). Bridge-slave-only gives us `s_axib_*` (~35 ports) without MM DMA (~92 total ports if we'd kept both on). |
+
+## New scope (narrower) — ready to execute
+
+| | Current (2b3941e) | Revised |
+|---|---|---|
+| New ports | ~92 | **~35** (`s_axib_*` only, from RecoNIC canonical) |
+| CDC modules | 2 | **0** (s_axib runs `axis_aclk` 250 MHz, same as existing streaming) |
+| Crossbar regen | 4→5-master | **None** (s_axib is a consumer, not crossbar master) |
+
+## Exact insertion points (from Session 2 agents A/B/C)
+
+### `qdma_subsystem_qdma_wrapper.v`
+- Module header ends line 164 → insert 35 port declarations before it.
+- `QDMA_ID==0` generate: lines 287-458, IP inst `qdma_no_sriov qdma_inst`, last port line 456 (`.phy_ready`) → append `.s_axib_*()` connections.
+- `QDMA_ID==1` generate: lines 459-629, IP inst `qdma_no_sriov_1 qdma_inst`, last port line 628 → same.
+- Clocks already in scope: `aclk_250mhz` / `aresetn_250mhz`.
+
+### `qdma_subsystem.sv`
+- Module header ends line 181 → insert 35 passthrough port declarations.
+- `qdma_subsystem_qdma_wrapper` inst `qdma_wrapper_inst` at lines 321-461, last port line 460 → append `.s_axib_*(s_axib_*)`.
+- `USE_PHYS_FUNC==0` stub block lines 532-600 → tie off **OUTPUTS** of the module's s_axib interface (8 signals: awready, wready, bid, bresp, bvalid, arready, rid, rdata, ruser, rresp, rlast, rvalid — tie to 0; ready signals OK at 0 to stall). Inputs to the module need no stub action (just unused wires).
+
+### `open_nic_shell.sv`
+- `qdma_subsystem` instantiated inside `generate for (i=0; i<NUM_QDMA; i++)` at lines 1671-1810. Instance `(` at line 1679.
+- `axi_sys_mem_mux_*` master signals declared lines 1181-1219 (SINGLE bus, not per-QDMA).
+- Stub comment to remove: lines 3419-3422 inside `__rdma_enabled__` block.
+
+## RecoNIC canonical `s_axib_*` port list (ground truth)
+
+From `RecoNIC/.../qdma_subsystem_qdma_wrapper.v:224-258`. 35 ports, widths confirmed:
+
+```verilog
+input   [3:0] s_axib_awid,          input  [63:0] s_axib_awaddr,
+input   [3:0] s_axib_awregion,      input   [7:0] s_axib_awlen,
+input   [2:0] s_axib_awsize,        input   [1:0] s_axib_awburst,
+input         s_axib_awvalid,       output        s_axib_awready,
+input [511:0] s_axib_wdata,         input  [63:0] s_axib_wstrb,
+input         s_axib_wlast,         input         s_axib_wvalid,
+output        s_axib_wready,        input  [63:0] s_axib_wuser,
+output        s_axib_bvalid,        input         s_axib_bready,
+output  [3:0] s_axib_bid,           output  [1:0] s_axib_bresp,
+input   [3:0] s_axib_arid,          input  [63:0] s_axib_araddr,
+input  [11:0] s_axib_aruser,        input  [11:0] s_axib_awuser,
+input   [3:0] s_axib_arregion,      input   [7:0] s_axib_arlen,
+input   [2:0] s_axib_arsize,        input   [1:0] s_axib_arburst,
+input         s_axib_arvalid,       output        s_axib_arready,
+output  [3:0] s_axib_rid,           output[511:0] s_axib_rdata,
+output  [1:0] s_axib_rresp,         output        s_axib_rlast,
+output        s_axib_rvalid,        input         s_axib_rready,
+output [63:0] s_axib_ruser,
+```
+
+**Critical notes**:
+- NO `awprot / awlock / awcache / awqos` exposed by QDMA IP (PG302 Tables 47-51 confirm; RecoNIC confirms).
+- `awuser[11:0]` / `aruser[11:0]` — wider than PG302 documents (p118: awuser[7:0] = function_number). Upper 4 bits likely reserved/newer-variant. Tie upper bits to 0, function bits to 0 (single-PF path).
+- `wuser[63:0]` / `ruser[63:0]` — per-byte parity. Tie `wuser` = 0 (no parity), let `ruser` float.
+
+## THREE OPEN DECISIONS (block RTL write — next session must resolve first)
+
+### Decision 1 — Directionality (IMPORTANT, may require rework)
+
+PG302 is unambiguous:
+- `m_axib_*` (AXI Bridge **Master**) = QDMA → fabric. Host writes a BAR typed "AXI Bridge Master" → lands on `m_axib` → fabric routes → DDR4 / CSR.
+- `s_axib_*` (AXI Bridge **Slave**) = fabric → QDMA. Fabric initiates → QDMA masters PCIe onto host memory.
+
+Session 1's audit stated the Tier 1b goal as "host mmap BAR → writes to DDR4 for SQ/RQ/CQ setup" but chose `s_axib`. Those are **inconsistent**:
+- For host→DDR4 setup of queues-in-card-memory, need `m_axib` + a BAR typed AXI_Bridge_Master. (Our BAR2 is AXI_Lite_Master, reaches `m_axil` — that's why Tier 1a CSR bring-up works.)
+- For ERNIC→host (queues-in-host-memory, ERNIC DMAs them), need `s_axib`. **This matches RecoNIC's pattern** + the stub comment in our `open_nic_shell.sv:3420` ("axi_sys_mem_mux output drives the QDMA bridge for host-memory DMA from ERNIC").
+
+**Likely resolution**: ERNIC queues live in host memory (RecoNIC pattern), so `s_axib` IS the correct choice — the audit's goal-statement wording was just imprecise. Next session should confirm by inspecting the `onic-driver` variant that RecoNIC ships (where does it allocate SQ/RQ/CQ buffers?). If confirmed → proceed with `s_axib` graft. If card-DDR4 queues are actually desired → re-scope to `m_axib` + BAR reconfig.
+
+### Decision 2 — Signal mismatch at `open_nic_shell.sv` wiring site
+
+`axi_sys_mem_mux_*` (lines 1181-1219) ≠ `s_axib_*` signal sets:
+
+| Signal | mux has? | `s_axib` has? | Resolution |
+|---|---|---|---|
+| `awprot / awlock / awcache / awqos` + ar-equivalents | ✅ | ❌ | Leave unconnected on mux side |
+| `awuser[11:0] / aruser[11:0]` | ❌ | ✅ input | Tie to 0 (single PF) |
+| `wuser[63:0]` | ❌ | ✅ input | Tie to 0 (no parity) |
+| `ruser[63:0]` | ❌ | ✅ output | Leave unconnected |
+
+Clean but not a blind passthrough — explicit tie-offs needed at the wiring site.
+
+### Decision 3 — Multi-QDMA fan-out
+
+`open_nic_shell.sv:1671-1810` instantiates `qdma_subsystem` inside `generate for (i=0; i<NUM_QDMA; i++)`. Dual-CMAC config → NUM_QDMA=2. But only ONE `axi_sys_mem_mux_*` bus (1181-1219).
+
+Options:
+- **A** (simplest): Wire mux → QDMA[0], tie off QDMA[1].s_axib_*.
+- **B**: Add 1-to-2 demux — unnecessary complexity for Tier 1b.
+- **C**: Verify which QDMA actually serves ERNIC — may be only one.
+
+**Proposed default**: Option A. Grep `open_nic_shell.sv` for ERNIC→QDMA_ID binding to confirm.
+
+## Artifacts this session
+- PG302 searchable markdown: `/home/alex/Downloads/XilinxAmdDownloads/xilinx-general-docs/pcie/pg302-qdma.md` (grep-friendly; PDF page markers `<!-- PDF page N -->` inline).
+- PG302 images: `/home/alex/Downloads/XilinxAmdDownloads/xilinx-general-docs/pcie/pg302-images/` (77 PNGs incl. Figure 1 architecture, Figure 27 Basic Tab).
+- Audit evidence grep lines in `open_nic_shell.sv`:
+  - Stub: `3419-3422`
+  - `axi_sys_mem_mux_*` wires: `1181-1219`
+  - `qdma_subsystem` inst (generate): `1671-1810`
+
+## Revised Session 3 entry point (supersedes original)
+
+1. **Resolve Decision 1** (directionality): grep the RecoNIC onic driver variant for how SQ/RQ/CQ buffers are allocated (host pages vs card DDR4). Likely confirms `s_axib` is correct.
+2. **Resolve Decision 3** (fan-out): grep `open_nic_shell.sv` to find which QDMA_ID is bound to ERNIC. Default to Option A if ambiguous.
+3. Apply RTL graft per insertion points above (Decision 2 tie-offs baked in).
+4. Commit TCL revert + RTL graft as a single logical change: `build+rtl(qdma): Tier 1b Item 2 — bridge-slave-only narrow-scope graft`.
+5. Run `script/build_2cmac_rdma_v2_ipgen.sh` → inspect generated `qdma_no_sriov.v` for the port list.
+6. Synth-only build → catch connectivity errors cheaply.
+7. Full rebuild → Phase 1 CSR regression (BAR2 16M, ERNIC CSR 27/27).
+8. Phase 2 design (ERNIC RDMA data flow through `s_axib`).
+
+---
+
+# Session 3 addendum — 2026-04-17 (Decision 1 + Decision 3 resolved)
+
+## Decision 1 — RESOLVED: `s_axib` is correct
+
+**Verdict**: ERNIC queues live in **host memory** (default RecoNIC path). Wire `s_axib_*` (fabric → QDMA → host).
+
+Evidence from RecoNIC userspace lib + driver:
+- `RecoNIC/lib/rdma_api.c:453,459,476` — SQ/RQ/CQ allocated via `allocate_rdma_buffer(..., buf_location)` with `buf_location` defaulting to `HOST_MEM` (`examples/rdma_test/rdma_test.h:21`).
+- `RecoNIC/lib/reconic.c:216-237` — `HOST_MEM` path pulls from pre-allocated hugepages; phys addr via `get_buffer_paddr`.
+- `RecoNIC/lib/rdma_api.c:548-596` — host phys addrs written to ERNIC `SQBAi/CQBAi/RQBAi` CSRs.
+- `RecoNIC/base_nics/open-nic-shell/src/open_nic_shell.sv:1743-1777` + comment `:1148` — QDMA `s_axib_*` wired to `axi_sys_mem_*`.
+
+Session 1 wording ("host mmap BAR → DDR4 for queues") was imprecise; actual pattern is ERNIC DMAs host pages via QDMA bridge slave.
+
+**Deferred**: `DEVICE_MEM` queue placement (would need `m_axib` + BAR type change + crossbar routing). Not in Tier 1b. Revisit only if profiling shows host-DMA is the bottleneck or a workload demands card-resident queues.
+
+## Decision 3 — RESOLVED: Option A (shared mux → QDMA[0].s_axib, tie off QDMA[1].s_axib)
+
+Current RTL in `open_nic_shell.sv`:
+- Per-ERNIC outbound host-DMA buses exist: `axi_sys_mem_0_*` (lines 1017-1055) and `axi_sys_mem_1_*` (lines 1099-1137).
+- Already merged upstream: `axi_interconnect_to_sys_mem_mux_inst` at lines 3160-3226 is a 2:1 arbiter producing a **single** `axi_sys_mem_mux_*` master (4-bit ID) at 3203-3222.
+- Stub site: lines 3419-3422 ("This will be connected when the QDMA s_axib port is wired").
+- No per-ERNIC-to-per-QDMA pairing in RTL.
+
+Inherited from RecoNIC single-CMAC baseline (RecoNIC has 1 ERNIC; dual-ERNIC here reused the existing mux). Functional isolation of the two ERNICs is preserved; only peak host-DMA bandwidth is shared.
+
+**Wiring**: `axi_sys_mem_mux_*` → `qdma_subsystem[0].s_axib_*` (with Decision 2 tie-offs). `qdma_subsystem[1].s_axib_*` → tie off handshake outputs at the module boundary.
+
+## ERNIC independence — confirmed (reference for later phases)
+
+Both ERNICs are fully independent at the RTL level:
+- Separate instances `rdma_subsystem_0_inst` (`:2346`) and `rdma_subsystem_1_inst` (`:2611`).
+- Separate CSR windows: ERNIC0 @ BAR2+0x800000, ERNIC1 @ BAR2+0xA00000 (`system_config_address_map.sv:347-348, 362-363, 870-906`).
+- Strict 1:1 CMAC binding: ERNIC0↔CMAC0 (`:2365-2381`), ERNIC1↔CMAC1 (`:2630-2646`).
+- Separate resets (`rdma_rstn` / `rdma_1_rstn`) and interrupts (`rdma0_intr` / `rdma1_intr`).
+- Separate Tier 1 AXI crossbars (`:2876`, `:3020`).
+
+Only shared resource is the downstream host-DMA path (the mux above). A user can bring up one port while the other is idle/down.
+
+## Deferred architectural option — per-PF-per-ERNIC split
+
+**Current model (post-Tier 1b)**:
+- `NUM_PHYS_FUNC=2`, `NUM_QDMA=1`.
+- QDMA IP exposes a **single** `m_axil_pcie_*` BAR2 master (`qdma_subsystem.sv:72-87`) — no per-PF demux inside the subsystem.
+- System AXI-Lite crossbar has **one** slave input (`system_config_address_map.sv:535, 957-976`).
+- **Consequence**: one driver instance on PF0 sees both ERNIC0 (@0x800000) and ERNIC1 (@0xA00000) in its BAR2. `NUM_PHYS_FUNC=2` gives a second PF with queue-space/MSI-X isolation but the **same** BAR2 layout — no per-PCI-function ERNIC split.
+
+**To achieve one-PF-per-ERNIC** (each PF owns exactly one port):
+1. Route the QDMA BAR2 AXI-Lite per-PF (QDMA IP can emit PF-tagged AXI-Lite; subsystem would need to preserve `awuser`/PF id instead of flattening).
+2. Build a PF-steering demux: PF0 BAR2 → crossbar slice containing only ERNIC0; PF1 BAR2 → ERNIC1 slice.
+3. Re-base each ERNIC to PF-local offset 0 (or keep global offsets and document per-PF maps).
+4. Update `system_config_address_map.sv` and the onic-driver to bind one driver instance per PF.
+
+**Scope**: Tier 2+ architectural rework, not Tier 1b. Record here so the option is not lost. Revisit if a multi-tenant / VM-passthrough use case requires true PCI-function-level isolation.
+
+## Updated Session 4 entry point (supersedes Session 3 entry point above)
+
+1. Decisions 1 and 3 are resolved (above). Decision 2 (signal mismatch tie-offs) is well-scoped and applied at the wiring site.
+2. Apply RTL graft per Session 2 insertion points.
+3. Commit TCL + RTL graft together (`build+rtl(qdma): Tier 1b Item 2 — bridge-slave-only narrow-scope graft`).
+4. Run `script/build_2cmac_rdma_v2_ipgen.sh` → inspect generated `qdma_no_sriov.v` port list.
+5. Synth-only build.
+6. Full rebuild → Phase 1 CSR regression (27/27, BAR2 16M preserved).
+7. Phase 2: ERNIC RDMA data flow through `s_axib` (driver + loopback test).

@@ -62,6 +62,7 @@ module open_nic_shell #(
   input                    [1:0] satellite_gpio,
 `elsif __xup_vv8__
   input                    [3:0] satellite_gpio,
+  output                   [3:0] led_l,
 `endif
 
   input                          satellite_uart_0_rxd,
@@ -1217,6 +1218,21 @@ module open_nic_shell #(
   wire         axi_sys_mem_mux_rvalid;
   wire         axi_sys_mem_mux_rready;
 
+  // Per-QDMA s_axib outputs. Only QDMA[0] drives the sys_mem mux; QDMA[1..N-1]
+  // receive zero inputs so their outputs are ignored.
+  wire     [NUM_QDMA-1:0] qdma_s_axib_awready;
+  wire     [NUM_QDMA-1:0] qdma_s_axib_wready;
+  wire     [NUM_QDMA-1:0] qdma_s_axib_bvalid;
+  wire   [4*NUM_QDMA-1:0] qdma_s_axib_bid;
+  wire   [2*NUM_QDMA-1:0] qdma_s_axib_bresp;
+  wire     [NUM_QDMA-1:0] qdma_s_axib_arready;
+  wire     [NUM_QDMA-1:0] qdma_s_axib_rvalid;
+  wire   [4*NUM_QDMA-1:0] qdma_s_axib_rid;
+  wire [512*NUM_QDMA-1:0] qdma_s_axib_rdata;
+  wire   [2*NUM_QDMA-1:0] qdma_s_axib_rresp;
+  wire     [NUM_QDMA-1:0] qdma_s_axib_rlast;
+  wire  [64*NUM_QDMA-1:0] qdma_s_axib_ruser;
+
   // Tier 3 → DDR4 output (7-bit ID, 34-bit addr)
   wire   [6:0] axi_ddr4_awid;
   wire  [33:0] axi_ddr4_awaddr;
@@ -1746,6 +1762,43 @@ module open_nic_shell #(
       .usr_irq_in_vld                       (link_irq_req),
       .usr_irq_in_vec                       (5'd0),
       .usr_irq_in_fnc                       (8'd0),
+
+      // AXI-MM Bridge Slave: QDMA[0] consumes sys_mem mux; QDMA[1..N-1] see zeros.
+      .s_axib_awid                          ((i == 0) ? axi_sys_mem_mux_awid      : 4'd0),
+      .s_axib_awaddr                        ((i == 0) ? axi_sys_mem_mux_awaddr    : 64'd0),
+      .s_axib_awregion                      ((i == 0) ? axi_sys_mem_mux_awregion  : 4'd0),
+      .s_axib_awlen                         ((i == 0) ? axi_sys_mem_mux_awlen     : 8'd0),
+      .s_axib_awsize                        ((i == 0) ? axi_sys_mem_mux_awsize    : 3'd0),
+      .s_axib_awburst                       ((i == 0) ? axi_sys_mem_mux_awburst   : 2'd0),
+      .s_axib_awvalid                       ((i == 0) ? axi_sys_mem_mux_awvalid   : 1'b0),
+      .s_axib_awready                       (qdma_s_axib_awready[i]),
+      .s_axib_wdata                         ((i == 0) ? axi_sys_mem_mux_wdata     : 512'd0),
+      .s_axib_wstrb                         ((i == 0) ? axi_sys_mem_mux_wstrb     : 64'd0),
+      .s_axib_wlast                         ((i == 0) ? axi_sys_mem_mux_wlast     : 1'b0),
+      .s_axib_wvalid                        ((i == 0) ? axi_sys_mem_mux_wvalid    : 1'b0),
+      .s_axib_wready                        (qdma_s_axib_wready[i]),
+      .s_axib_wuser                         (64'd0),                      // no parity
+      .s_axib_bvalid                        (qdma_s_axib_bvalid[i]),
+      .s_axib_bready                        ((i == 0) ? axi_sys_mem_mux_bready    : 1'b1),
+      .s_axib_bid                           (qdma_s_axib_bid[`getvec(4, i)]),
+      .s_axib_bresp                         (qdma_s_axib_bresp[`getvec(2, i)]),
+      .s_axib_arid                          ((i == 0) ? axi_sys_mem_mux_arid      : 4'd0),
+      .s_axib_araddr                        ((i == 0) ? axi_sys_mem_mux_araddr    : 64'd0),
+      .s_axib_aruser                        (12'd0),                      // single PF
+      .s_axib_awuser                        (12'd0),                      // single PF
+      .s_axib_arregion                      ((i == 0) ? axi_sys_mem_mux_arregion  : 4'd0),
+      .s_axib_arlen                         ((i == 0) ? axi_sys_mem_mux_arlen     : 8'd0),
+      .s_axib_arsize                        ((i == 0) ? axi_sys_mem_mux_arsize    : 3'd0),
+      .s_axib_arburst                       ((i == 0) ? axi_sys_mem_mux_arburst   : 2'd0),
+      .s_axib_arvalid                       ((i == 0) ? axi_sys_mem_mux_arvalid   : 1'b0),
+      .s_axib_arready                       (qdma_s_axib_arready[i]),
+      .s_axib_rid                           (qdma_s_axib_rid[`getvec(4, i)]),
+      .s_axib_rdata                         (qdma_s_axib_rdata[`getvec(512, i)]),
+      .s_axib_rresp                         (qdma_s_axib_rresp[`getvec(2, i)]),
+      .s_axib_rlast                         (qdma_s_axib_rlast[i]),
+      .s_axib_rvalid                        (qdma_s_axib_rvalid[i]),
+      .s_axib_rready                        ((i == 0) ? axi_sys_mem_mux_rready    : 1'b1),
+      .s_axib_ruser                         (qdma_s_axib_ruser[`getvec(64, i)]),
   `else // !`ifdef __synthesis__
       .s_axis_qdma_h2c_tvalid               (s_axis_qdma_h2c_sim_tvalid[i]),
       .s_axis_qdma_h2c_tdata                (s_axis_qdma_h2c_sim_tdata[`getvec(512, i)]),
@@ -2238,6 +2291,38 @@ module open_nic_shell #(
   assign gpio_led[0] = led_hb_cnt[26];
   assign gpio_led[1] = (NUM_CMAC_PORT > 1) ? cmac_link_up[1] & ~led_act_pulse[1] : 1'b0;
   assign gpio_led[2] = cmac_link_up[0] & ~led_act_pulse[0];
+`elsif __xup_vv8__
+  // Four active-low green LEDs: heartbeat, CMAC0 link+activity,
+  // CMAC1 link+activity, shell ready.
+  logic [26:0] led_hb_cnt;
+  always_ff @(posedge axil_aclk[0]) led_hb_cnt <= led_hb_cnt + 1'b1;
+
+  logic [NUM_CMAC_PORT-1:0][25:0] led_blink_cnt;
+  logic [NUM_CMAC_PORT-1:0]       led_saw_pkt;
+  logic [NUM_CMAC_PORT-1:0]       led_blink_en;
+  logic [NUM_CMAC_PORT-1:0]       led_act_pulse;
+  generate
+    for (genvar k = 0; k < NUM_CMAC_PORT; k++) begin : g_led_act_vv8
+      wire pkt_beat = axis_cmac_rx_tvalid[k] |
+                      (axis_cmac_tx_tvalid[k] & axis_cmac_tx_tready[k]);
+      always_ff @(posedge cmac_clk[k]) begin
+        led_blink_cnt[k] <= led_blink_cnt[k] + 1'b1;
+        if (pkt_beat)
+          led_saw_pkt[k] <= 1'b1;
+        if (&led_blink_cnt[k]) begin
+          led_blink_en[k] <= led_saw_pkt[k] | pkt_beat;
+          led_saw_pkt[k]  <= 1'b0;
+        end
+      end
+      assign led_act_pulse[k] = led_blink_en[k] & led_blink_cnt[k][25];
+    end
+  endgenerate
+
+  // Active-low outputs: 0 = LED ON, 1 = LED OFF.
+  assign led_l[0] = ~led_hb_cnt[26];
+  assign led_l[1] = ~(cmac_link_up[0] & ~led_act_pulse[0]);
+  assign led_l[2] = ~((NUM_CMAC_PORT > 1) ? (cmac_link_up[1] & ~led_act_pulse[1]) : 1'b0);
+  assign led_l[3] = ~(&shell_rst_done);
 `endif
 
   // ---------------------------------------------------------------------------
@@ -3383,10 +3468,18 @@ module open_nic_shell #(
   assign c0_init_calib_complete  = 1'b1;
 `endif
 
-  // Tie off sys_mem mux → QDMA bridge path (connected via qdma_subsystem s_axib)
-  // The axi_sys_mem_mux output drives the QDMA bridge for host-memory DMA from ERNIC.
-  // This will be connected when the QDMA s_axib port is wired.
-  // For now, provide user/region signals expected by QDMA.
+  // sys_mem mux slave side driven by QDMA[0]'s s_axib outputs.
+  assign axi_sys_mem_mux_awready = qdma_s_axib_awready[0];
+  assign axi_sys_mem_mux_wready  = qdma_s_axib_wready[0];
+  assign axi_sys_mem_mux_bvalid  = qdma_s_axib_bvalid[0];
+  assign axi_sys_mem_mux_bid     = qdma_s_axib_bid[3:0];
+  assign axi_sys_mem_mux_bresp   = qdma_s_axib_bresp[1:0];
+  assign axi_sys_mem_mux_arready = qdma_s_axib_arready[0];
+  assign axi_sys_mem_mux_rvalid  = qdma_s_axib_rvalid[0];
+  assign axi_sys_mem_mux_rid     = qdma_s_axib_rid[3:0];
+  assign axi_sys_mem_mux_rdata   = qdma_s_axib_rdata[511:0];
+  assign axi_sys_mem_mux_rresp   = qdma_s_axib_rresp[1:0];
+  assign axi_sys_mem_mux_rlast   = qdma_s_axib_rlast[0];
 
 `endif // __rdma_enabled__
 

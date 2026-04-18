@@ -100,6 +100,43 @@ module qdma_subsystem #(
   input                          usr_irq_in_vld,
   input                    [4:0] usr_irq_in_vec,
   input                    [7:0] usr_irq_in_fnc,
+
+  // AXI-MM Bridge Slave (fabric -> QDMA -> host memory). 250 MHz axis_aclk domain.
+  input                    [3:0] s_axib_awid,
+  input                   [63:0] s_axib_awaddr,
+  input                    [3:0] s_axib_awregion,
+  input                    [7:0] s_axib_awlen,
+  input                    [2:0] s_axib_awsize,
+  input                    [1:0] s_axib_awburst,
+  input                          s_axib_awvalid,
+  output                         s_axib_awready,
+  input                  [511:0] s_axib_wdata,
+  input                   [63:0] s_axib_wstrb,
+  input                          s_axib_wlast,
+  input                          s_axib_wvalid,
+  output                         s_axib_wready,
+  input                   [63:0] s_axib_wuser,
+  output                         s_axib_bvalid,
+  input                          s_axib_bready,
+  output                   [3:0] s_axib_bid,
+  output                   [1:0] s_axib_bresp,
+  input                    [3:0] s_axib_arid,
+  input                   [63:0] s_axib_araddr,
+  input                   [11:0] s_axib_aruser,
+  input                   [11:0] s_axib_awuser,
+  input                    [3:0] s_axib_arregion,
+  input                    [7:0] s_axib_arlen,
+  input                    [2:0] s_axib_arsize,
+  input                    [1:0] s_axib_arburst,
+  input                          s_axib_arvalid,
+  output                         s_axib_arready,
+  output                   [3:0] s_axib_rid,
+  output                 [511:0] s_axib_rdata,
+  output                   [1:0] s_axib_rresp,
+  output                         s_axib_rlast,
+  output                         s_axib_rvalid,
+  input                          s_axib_rready,
+  output                  [63:0] s_axib_ruser,
 `else // !`ifdef __synthesis__
   input                          s_axis_qdma_h2c_tvalid,
   input                  [511:0] s_axis_qdma_h2c_tdata,
@@ -457,7 +494,43 @@ module qdma_subsystem #(
     .ref_clk_100mhz                  (ref_clk_100mhz),
 `endif
 
-    .aresetn                         (powerup_rstn)
+    .aresetn                         (powerup_rstn),
+
+    .s_axib_awid                     (s_axib_awid),
+    .s_axib_awaddr                   (s_axib_awaddr),
+    .s_axib_awregion                 (s_axib_awregion),
+    .s_axib_awlen                    (s_axib_awlen),
+    .s_axib_awsize                   (s_axib_awsize),
+    .s_axib_awburst                  (s_axib_awburst),
+    .s_axib_awvalid                  (s_axib_awvalid),
+    .s_axib_awready                  (s_axib_awready),
+    .s_axib_wdata                    (s_axib_wdata),
+    .s_axib_wstrb                    (s_axib_wstrb),
+    .s_axib_wlast                    (s_axib_wlast),
+    .s_axib_wvalid                   (s_axib_wvalid),
+    .s_axib_wready                   (s_axib_wready),
+    .s_axib_wuser                    (s_axib_wuser),
+    .s_axib_bvalid                   (s_axib_bvalid),
+    .s_axib_bready                   (s_axib_bready),
+    .s_axib_bid                      (s_axib_bid),
+    .s_axib_bresp                    (s_axib_bresp),
+    .s_axib_arid                     (s_axib_arid),
+    .s_axib_araddr                   (s_axib_araddr),
+    .s_axib_aruser                   (s_axib_aruser),
+    .s_axib_awuser                   (s_axib_awuser),
+    .s_axib_arregion                 (s_axib_arregion),
+    .s_axib_arlen                    (s_axib_arlen),
+    .s_axib_arsize                   (s_axib_arsize),
+    .s_axib_arburst                  (s_axib_arburst),
+    .s_axib_arvalid                  (s_axib_arvalid),
+    .s_axib_arready                  (s_axib_arready),
+    .s_axib_rid                      (s_axib_rid),
+    .s_axib_rdata                    (s_axib_rdata),
+    .s_axib_rresp                    (s_axib_rresp),
+    .s_axib_rlast                    (s_axib_rlast),
+    .s_axib_rvalid                   (s_axib_rvalid),
+    .s_axib_rready                   (s_axib_rready),
+    .s_axib_ruser                    (s_axib_ruser)
   );
 `else // !`ifdef __synthesis__
   initial begin
@@ -597,6 +670,22 @@ module qdma_subsystem #(
     assign m_axis_h2c_tuser_user    = 0;
 
     assign s_axis_c2h_tready     = 1'b1;
+
+`ifdef __synthesis__
+    // Tie off AXI-MM Bridge Slave outputs (no QDMA IP in stub mode)
+    assign s_axib_awready = 1'b0;
+    assign s_axib_wready  = 1'b0;
+    assign s_axib_bvalid  = 1'b0;
+    assign s_axib_bid     = 4'd0;
+    assign s_axib_bresp   = 2'd0;
+    assign s_axib_arready = 1'b0;
+    assign s_axib_rvalid  = 1'b0;
+    assign s_axib_rid     = 4'd0;
+    assign s_axib_rdata   = 512'd0;
+    assign s_axib_rresp   = 2'd0;
+    assign s_axib_rlast   = 1'b0;
+    assign s_axib_ruser   = 64'd0;
+`endif
   end
   else begin
     wire                         axil_awvalid;
