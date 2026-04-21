@@ -36,10 +36,10 @@ set_property -dict {
     CONFIG.pf2_bar2_size_qdma {16}
     CONFIG.pf3_bar2_scale_qdma {Megabytes}
     CONFIG.pf3_bar2_size_qdma {16}
-    CONFIG.PF0_MSIX_CAP_TABLE_SIZE_qdma {081}
-    CONFIG.PF1_MSIX_CAP_TABLE_SIZE_qdma {081}
-    CONFIG.PF2_MSIX_CAP_TABLE_SIZE_qdma {081}
-    CONFIG.PF3_MSIX_CAP_TABLE_SIZE_qdma {081}
+    CONFIG.PF0_MSIX_CAP_TABLE_SIZE_qdma {07F}
+    CONFIG.PF1_MSIX_CAP_TABLE_SIZE_qdma {07F}
+    CONFIG.PF2_MSIX_CAP_TABLE_SIZE_qdma {07F}
+    CONFIG.PF3_MSIX_CAP_TABLE_SIZE_qdma {07F}
     CONFIG.dma_intf_sel_qdma {AXI_Stream_with_Completion}
     CONFIG.en_axi_mm_qdma {false}
     CONFIG.en_bridge_slv {true}
