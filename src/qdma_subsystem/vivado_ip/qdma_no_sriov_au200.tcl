@@ -36,10 +36,10 @@ set_property -dict {
     CONFIG.pf2_bar2_size_qdma {16}
     CONFIG.pf3_bar2_scale_qdma {Megabytes}
     CONFIG.pf3_bar2_size_qdma {16}
-    CONFIG.PF0_MSIX_CAP_TABLE_SIZE_qdma {01F}
-    CONFIG.PF1_MSIX_CAP_TABLE_SIZE_qdma {01F}
-    CONFIG.PF2_MSIX_CAP_TABLE_SIZE_qdma {01F}
-    CONFIG.PF3_MSIX_CAP_TABLE_SIZE_qdma {01F}
+    CONFIG.PF0_MSIX_CAP_TABLE_SIZE_qdma {081}
+    CONFIG.PF1_MSIX_CAP_TABLE_SIZE_qdma {081}
+    CONFIG.PF2_MSIX_CAP_TABLE_SIZE_qdma {081}
+    CONFIG.PF3_MSIX_CAP_TABLE_SIZE_qdma {081}
     CONFIG.dma_intf_sel_qdma {AXI_Stream_with_Completion}
     CONFIG.en_axi_mm_qdma {false}
     CONFIG.en_bridge_slv {true}
@@ -59,5 +59,5 @@ set_property -dict {
     CONFIG.pf1_sub_class_interface_menu_qdma {Other_network_controller}
     CONFIG.pf1_class_code_qdma {028000}
 } [get_ips $qdma]
-set_property CONFIG.tl_pf_enable_reg $num_phys_func [get_ips $qdma]
+set_property CONFIG.tl_pf_enable_reg 1 [get_ips $qdma]
 set_property CONFIG.num_queues $num_queue [get_ips $qdma]
