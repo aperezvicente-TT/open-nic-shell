@@ -1,0 +1,13 @@
+<testsuites name="results">
+  <testsuite name="all" package="all">
+    <property name="random_seed" value="1776984139" />
+    <testcase name="test_frame17_debug" classname="test_encap_decap" file="/home/alex/mpi-shfs/fpga/open-nic-shell-tt-link/plugin/tt_link_udp_bridge/tb/test_encap_decap.py" lineno="164" time="0.46138858795166016" sim_time_ns="11000.001" ratio_time="23841.077320170898" />
+    <testcase name="test_basic_roundtrip" classname="test_encap_decap" file="/home/alex/mpi-shfs/fpga/open-nic-shell-tt-link/plugin/tt_link_udp_bridge/tb/test_encap_decap.py" lineno="245" time="0.005226850509643555" sim_time_ns="60.001000000000204" ratio_time="11479.379387127714" />
+    <testcase name="test_roundtrip_1000_random" classname="test_encap_decap" file="/home/alex/mpi-shfs/fpga/open-nic-shell-tt-link/plugin/tt_link_udp_bridge/tb/test_encap_decap.py" lineno="266" time="10.94461703300476" sim_time_ns="56048.001" ratio_time="5121.056390642154" />
+    <testcase name="test_mtu_boundary_passes" classname="test_encap_decap" file="/home/alex/mpi-shfs/fpga/open-nic-shell-tt-link/plugin/tt_link_udp_bridge/tb/test_encap_decap.py" lineno="299" time="0.025054931640625" sim_time_ns="144.00100000000384" ratio_time="5747.411410475183" />
+    <testcase name="test_oversize_drop" classname="test_encap_decap" file="/home/alex/mpi-shfs/fpga/open-nic-shell-tt-link/plugin/tt_link_udp_bridge/tb/test_encap_decap.py" lineno="318" time="0.01285696029663086" sim_time_ns="160.00100000000384" ratio_time="12444.698926380894" />
+    <testcase name="test_decap_bad_checksum" classname="test_encap_decap" file="/home/alex/mpi-shfs/fpga/open-nic-shell-tt-link/plugin/tt_link_udp_bridge/tb/test_encap_decap.py" lineno="341" time="0.006293773651123047" sim_time_ns="76.00099999998929" ratio_time="12075.585207362492" />
+    <testcase name="test_decap_bad_port" classname="test_encap_decap" file="/home/alex/mpi-shfs/fpga/open-nic-shell-tt-link/plugin/tt_link_udp_bridge/tb/test_encap_decap.py" lineno="371" time="0.004640817642211914" sim_time_ns="68.00100000000384" ratio_time="14652.805872284414" />
+    <testcase name="test_back_pressure" classname="test_encap_decap" file="/home/alex/mpi-shfs/fpga/open-nic-shell-tt-link/plugin/tt_link_udp_bridge/tb/test_encap_decap.py" lineno="407" time="0.17367053031921387" sim_time_ns="1032.0010000000038" ratio_time="5942.291983004496" />
+  </testsuite>
+</testsuites>

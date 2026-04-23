@@ -49,18 +49,20 @@ module udp_encap_tx (
   typedef enum logic [1:0] {S_IDLE, S_BODY, S_TAIL, S_DROP} state_t;
   state_t state;
 
-  // Per-frame latched header fields
-  reg [15:0] ip_len_r;    // IPv4 total length = tuser_size + 14
-  reg [15:0] udp_len_r;   // UDP length        = tuser_size - 6
-  reg [15:0] ip_id_r;
+  // IP ID counter (incremented once per accepted frame)
   reg [15:0] ip_id_ctr;
+
+  // Combinational header fields for beat 0 — derived from the CURRENT input beat
+  // so the emitted header always matches the frame being processed.
+  wire [15:0] ip_len_comb  = s_axis_tuser_size + 16'd14;
+  wire [15:0] udp_len_comb = s_axis_tuser_size - 16'd6;
 
   // Shift-register carry: upper 28 bytes (224 bits) of previous input beat
   reg [223:0] carry_data;
   reg  [27:0] carry_keep;
 
   // ---------------------------------------------------------------------------
-  // IP header checksum (combinational, uses latched per-frame fields)
+  // IP header checksum (combinational, uses ip_len_comb and ip_id_ctr)
   // ---------------------------------------------------------------------------
   logic [19:0] ck_sum;
   logic [16:0] ck_fold;
@@ -68,8 +70,8 @@ module udp_encap_tx (
 
   always_comb begin
     ck_sum  = 20'h4500
-            + {4'h0, ip_len_r}
-            + {4'h0, ip_id_r}
+            + {4'h0, ip_len_comb}
+            + {4'h0, ip_id_ctr}
             + 20'h4000           // DF flag, no fragment
             + 20'h4011           // TTL=64, proto=UDP(17)
             + {4'h0, cfg_local_ip[31:16]}
@@ -90,7 +92,7 @@ module udp_encap_tx (
       // byte 41..40: UDP checksum = 0
       8'h00, 8'h00,
       // byte 39..38: UDP length
-      udp_len_r[7:0], udp_len_r[15:8],
+      udp_len_comb[7:0], udp_len_comb[15:8],
       // byte 37..36: UDP dst port
       cfg_udp_port[7:0], cfg_udp_port[15:8],
       // byte 35..34: UDP src port
@@ -106,9 +108,9 @@ module udp_encap_tx (
       // byte 21: frag offset LSB=0, byte 20: flags=0x40 (DF), frag offset MSB=0
       8'h00, 8'h40,
       // byte 19..18: IP identification
-      ip_id_r[7:0], ip_id_r[15:8],
+      ip_id_ctr[7:0], ip_id_ctr[15:8],
       // byte 17..16: IP total length
-      ip_len_r[7:0], ip_len_r[15:8],
+      ip_len_comb[7:0], ip_len_comb[15:8],
       // byte 15: DSCP/ECN=0, byte 14: version=4 IHL=5 → 0x45
       8'h00, 8'h45,
       // byte 13..12: EtherType = 0x0800
@@ -167,13 +169,11 @@ module udp_encap_tx (
               stat_oversize_drops <= stat_oversize_drops + 1;
               state <= S_DROP;
             end else begin
-              // Latch per-frame fields
-              ip_len_r  <= s_axis_tuser_size + 16'd14;
-              udp_len_r <= s_axis_tuser_size - 16'd6;
-              ip_id_r   <= ip_id_ctr;
-              ip_id_ctr <= ip_id_ctr + 16'd1;
-              // Consume beat 0 immediately if output is ready
+              // Consume beat 0 when output register is free.
+              // hdr and ip_len_comb/udp_len_comb are purely combinational
+              // from s_axis_tuser_size, so no pre-latch step is needed.
               if (out_ready) begin
+                ip_id_ctr         <= ip_id_ctr + 16'd1;
                 m_axis_tvalid     <= 1'b1;
                 // bytes 0..41 = new header, bytes 42..63 = orig bytes 14..35
                 m_axis_tdata      <= {s_axis_tdata[287:112], hdr};
@@ -193,14 +193,9 @@ module udp_encap_tx (
                   m_axis_tlast <= 1'b0;
                   state <= S_BODY;
                 end
-              end else begin
-                // Output blocked; wait in IDLE until output clears
-                // (re-enters IDLE next cycle with same tvalid beat)
-                // Undo the latch (we'll re-compute next cycle) — or just
-                // stall: s_axis_tready is 0 when !out_ready in IDLE, so
-                // the sender holds tvalid. We just need to NOT transition.
-                state <= S_IDLE;
               end
+              // else: output blocked; s_axis_tready=0 holds the source;
+              // stay in S_IDLE and retry next cycle.
             end
           end
         end

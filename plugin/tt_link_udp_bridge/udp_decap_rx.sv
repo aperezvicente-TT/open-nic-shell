@@ -12,7 +12,7 @@
 //
 // Validation on beat 0/1 (drops frame + bumps counter on any failure):
 //   - IPv4 version == 4, IHL == 5 (no options)
-//   - IPv4 total_length <= cfg_mtu - 14
+//   - IPv4 total_length <= cfg_mtu
 //   - IPv4 protocol == 17 (UDP)
 //   - IPv4 header checksum == 0xFFFF (ones complement sum)
 //   - UDP dst_port == cfg_udp_port
@@ -170,7 +170,7 @@ module udp_decap_rx (
             end else if (b34_udp_dport_beat0 != cfg_udp_port) begin
               stat_drops_bad_port <= stat_drops_bad_port + 1;
               state <= S_DROP;
-            end else if (b16_ip_len > (cfg_mtu - 16'd14)) begin
+            end else if (b16_ip_len > cfg_mtu) begin
               stat_drops_oversize <= stat_drops_oversize + 1;
               state <= S_DROP;
             end else if (s_axis_tlast) begin
@@ -254,6 +254,8 @@ module udp_decap_rx (
           if (s_axis_tvalid && s_axis_tlast)
             state <= S_BEAT0;
         end
+
+        default: state <= S_BEAT0;
 
       endcase
     end
