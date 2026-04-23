@@ -1,0 +1,5 @@
+sim_build/
+__pycache__/
+*.pyc
+wave.fst
+results.xml
