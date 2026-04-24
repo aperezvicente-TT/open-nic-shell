@@ -430,6 +430,7 @@ module open_nic_shell #(
   wire  [16*NUM_PHYS_FUNC*NUM_QDMA-1:0] axis_qdma_h2c_tuser_src;
   wire  [16*NUM_PHYS_FUNC*NUM_QDMA-1:0] axis_qdma_h2c_tuser_dst;
   wire  [16*NUM_PHYS_FUNC*NUM_QDMA-1:0] axis_qdma_h2c_tuser_ptp_tag;
+  wire  [11*NUM_PHYS_FUNC*NUM_QDMA-1:0] axis_qdma_h2c_tuser_qid;
   wire     [NUM_PHYS_FUNC*NUM_QDMA-1:0] axis_qdma_h2c_tready;
 
   wire     [NUM_PHYS_FUNC*NUM_QDMA-1:0] axis_qdma_c2h_tvalid;
@@ -440,6 +441,7 @@ module open_nic_shell #(
   wire  [16*NUM_PHYS_FUNC*NUM_QDMA-1:0] axis_qdma_c2h_tuser_src;
   wire  [16*NUM_PHYS_FUNC*NUM_QDMA-1:0] axis_qdma_c2h_tuser_dst;
   wire  [80*NUM_PHYS_FUNC*NUM_QDMA-1:0] axis_qdma_c2h_tuser_ptp_ts;
+  wire  [11*NUM_PHYS_FUNC*NUM_QDMA-1:0] axis_qdma_c2h_tuser_qid;
   wire     [NUM_PHYS_FUNC*NUM_QDMA-1:0] axis_qdma_c2h_tready;
 
   // Packet adapter interfaces to the box running at 250MHz
@@ -1745,7 +1747,14 @@ module open_nic_shell #(
       .MAX_PKT_LEN   (MAX_PKT_LEN),
       .USE_PHYS_FUNC (USE_PHYS_FUNC),
       .NUM_PHYS_FUNC (NUM_PHYS_FUNC),
-      .NUM_QUEUE     (NUM_QUEUE)
+      .NUM_QUEUE     (NUM_QUEUE),
+`ifdef __rdma_enabled__
+      // Path γ: RDMA plugin arbitrates CMACs into slot 0 and tags absolute
+      // qid via s_axis_c2h_tuser_qid.  Bypass internal RSS computation.
+      .EXT_QID       (1)
+`else
+      .EXT_QID       (0)
+`endif
     ) qdma_subsystem_inst (
       .s_axil_awvalid                       (axil_qdma_awvalid[i]),
       .s_axil_awaddr                        (axil_qdma_awaddr[`getvec(32, i)]),
@@ -1772,6 +1781,7 @@ module open_nic_shell #(
       .m_axis_h2c_tuser_src                 (axis_qdma_h2c_tuser_src[`getvec(16*NUM_PHYS_FUNC, i)]),
       .m_axis_h2c_tuser_dst                 (axis_qdma_h2c_tuser_dst[`getvec(16*NUM_PHYS_FUNC, i)]),
       .m_axis_h2c_tuser_ptp_tag             (axis_qdma_h2c_tuser_ptp_tag[`getvec(16*NUM_PHYS_FUNC, i)]),
+      .m_axis_h2c_tuser_qid                 (axis_qdma_h2c_tuser_qid[`getvec(11*NUM_PHYS_FUNC, i)]),
       .m_axis_h2c_tready                    (axis_qdma_h2c_tready[`getvec(NUM_PHYS_FUNC, i)]),
 
       .s_axis_c2h_tvalid                    (axis_qdma_c2h_tvalid[`getvec(NUM_PHYS_FUNC, i)]),
@@ -1782,6 +1792,7 @@ module open_nic_shell #(
       .s_axis_c2h_tuser_src                 (axis_qdma_c2h_tuser_src[`getvec(16*NUM_PHYS_FUNC, i)]),
       .s_axis_c2h_tuser_dst                 (axis_qdma_c2h_tuser_dst[`getvec(16*NUM_PHYS_FUNC, i)]),
       .s_axis_c2h_tuser_ptp_ts              (axis_qdma_c2h_tuser_ptp_ts[`getvec(80*NUM_PHYS_FUNC, i)]),
+      .s_axis_c2h_tuser_qid                 (axis_qdma_c2h_tuser_qid[`getvec(11*NUM_PHYS_FUNC, i)]),
       .s_axis_c2h_tready                    (axis_qdma_c2h_tready[`getvec(NUM_PHYS_FUNC, i)]),
 
   `ifdef __synthesis__
@@ -2124,6 +2135,7 @@ module open_nic_shell #(
     .s_axis_qdma_h2c_tuser_src            (axis_qdma_h2c_tuser_src),
     .s_axis_qdma_h2c_tuser_dst            (axis_qdma_h2c_tuser_dst),
     .s_axis_qdma_h2c_tuser_ptp_tag        (axis_qdma_h2c_tuser_ptp_tag),
+    .s_axis_qdma_h2c_tuser_qid            (axis_qdma_h2c_tuser_qid),
     .s_axis_qdma_h2c_tready               (axis_qdma_h2c_tready),
 
     .m_axis_qdma_c2h_tvalid               (axis_qdma_c2h_tvalid),
@@ -2134,6 +2146,7 @@ module open_nic_shell #(
     .m_axis_qdma_c2h_tuser_src            (axis_qdma_c2h_tuser_src),
     .m_axis_qdma_c2h_tuser_dst            (axis_qdma_c2h_tuser_dst),
     .m_axis_qdma_c2h_tuser_ptp_ts         (axis_qdma_c2h_tuser_ptp_ts),
+    .m_axis_qdma_c2h_tuser_qid            (axis_qdma_c2h_tuser_qid),
     .m_axis_qdma_c2h_tready               (axis_qdma_c2h_tready),
 
     .m_axis_adap_tx_250mhz_tvalid         (axis_adap_tx_250mhz_tvalid),
@@ -2227,6 +2240,57 @@ module open_nic_shell #(
     .s_rx_pkt_hndler_i_rq_db_addr        (rdma0_rx_pkt_hndler_o_rq_db_addr),
     .s_rx_pkt_hndler_i_rq_db_data_valid  (rdma0_rx_pkt_hndler_o_rq_db_data_valid),
     .s_rx_pkt_hndler_o_rq_db_rdy         (rdma0_rx_pkt_hndler_i_rq_db_rdy),
+
+    // ERNIC1: RoCE packets from CMAC1 classifier
+    .m_axis_user2rdma1_roce_from_cmac_rx_tvalid (cmac1_roce_axis_tvalid),
+    .m_axis_user2rdma1_roce_from_cmac_rx_tdata  (cmac1_roce_axis_tdata),
+    .m_axis_user2rdma1_roce_from_cmac_rx_tkeep  (cmac1_roce_axis_tkeep),
+    .m_axis_user2rdma1_roce_from_cmac_rx_tlast  (cmac1_roce_axis_tlast),
+    .m_axis_user2rdma1_roce_from_cmac_rx_tready (cmac1_roce_axis_tready),
+
+    // ERNIC1: TX path to CMAC1
+    .s_axis_rdma2user1_to_cmac_tx_tvalid        (rdma1_tx_axis_tvalid),
+    .s_axis_rdma2user1_to_cmac_tx_tdata         (rdma1_tx_axis_tdata),
+    .s_axis_rdma2user1_to_cmac_tx_tkeep         (rdma1_tx_axis_tkeep),
+    .s_axis_rdma2user1_to_cmac_tx_tlast         (rdma1_tx_axis_tlast),
+    .s_axis_rdma2user1_to_cmac_tx_tready        (rdma1_tx_axis_tready),
+
+    // ERNIC1: QDMA H2C non-RoCE bypass
+    .m_axis_user2rdma1_from_qdma_tx_tvalid      (qdma1_non_roce_axis_tvalid),
+    .m_axis_user2rdma1_from_qdma_tx_tdata       (qdma1_non_roce_axis_tdata),
+    .m_axis_user2rdma1_from_qdma_tx_tkeep       (qdma1_non_roce_axis_tkeep),
+    .m_axis_user2rdma1_from_qdma_tx_tlast       (qdma1_non_roce_axis_tlast),
+    .m_axis_user2rdma1_from_qdma_tx_tready      (qdma1_non_roce_axis_tready),
+
+    // ERNIC1: IETH/IMMDT sideband
+    .s_axis_rdma2user1_ieth_immdt_tdata         (rdma1_ieth_immdt_axis_tdata),
+    .s_axis_rdma2user1_ieth_immdt_tlast         (rdma1_ieth_immdt_axis_tlast),
+    .s_axis_rdma2user1_ieth_immdt_tvalid        (rdma1_ieth_immdt_axis_tvalid),
+    .s_axis_rdma2user1_ieth_immdt_trdy          (rdma1_ieth_immdt_axis_trdy),
+
+    // ERNIC1: send CQ doorbell
+    .s_resp_hndler1_i_send_cq_db_cnt_valid(rdma1_resp_hndler_o_send_cq_db_cnt_valid),
+    .s_resp_hndler1_i_send_cq_db_addr     (rdma1_resp_hndler_o_send_cq_db_addr[9:0]),
+    .s_resp_hndler1_i_send_cq_db_cnt      (rdma1_resp_hndler_o_send_cq_db_cnt),
+    .s_resp_hndler1_o_send_cq_db_rdy      (rdma1_resp_hndler_i_send_cq_db_rdy),
+
+    // ERNIC1: SQ producer-index doorbell
+    .m_o_qp1_sq_pidb_hndshk               (rdma1_i_qp_sq_pidb_hndshk),
+    .m_o_qp1_sq_pidb_wr_addr_hndshk       (rdma1_i_qp_sq_pidb_wr_addr_hndshk),
+    .m_o_qp1_sq_pidb_wr_valid_hndshk      (rdma1_i_qp_sq_pidb_wr_valid_hndshk),
+    .m_i_qp1_sq_pidb_wr_rdy               (rdma1_o_qp_sq_pidb_wr_rdy),
+
+    // ERNIC1: RQ consumer-index doorbell
+    .m_o_qp1_rq_cidb_hndshk               (rdma1_i_qp_rq_cidb_hndshk),
+    .m_o_qp1_rq_cidb_wr_addr_hndshk       (rdma1_i_qp_rq_cidb_wr_addr_hndshk),
+    .m_o_qp1_rq_cidb_wr_valid_hndshk      (rdma1_i_qp_rq_cidb_wr_valid_hndshk),
+    .m_i_qp1_rq_cidb_wr_rdy               (rdma1_o_qp_rq_cidb_wr_rdy),
+
+    // ERNIC1: RX packet handler RQ doorbell
+    .s_rx_pkt_hndler1_i_rq_db_data_valid  (rdma1_rx_pkt_hndler_o_rq_db_data_valid),
+    .s_rx_pkt_hndler1_i_rq_db_addr        (rdma1_rx_pkt_hndler_o_rq_db_addr[9:0]),
+    .s_rx_pkt_hndler1_i_rq_db_data        (rdma1_rx_pkt_hndler_o_rq_db_data),
+    .s_rx_pkt_hndler1_o_rq_db_rdy         (rdma1_rx_pkt_hndler_i_rq_db_rdy),
 
     // AXI-MM compute logic
     .m_axi_compute_logic_awid            (axi_compute_logic_awid),

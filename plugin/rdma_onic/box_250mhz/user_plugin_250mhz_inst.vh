@@ -19,10 +19,6 @@ initial begin
   if (USE_PHYS_FUNC == 0) begin
     $fatal("No implementation for USE_PHYS_FUNC = %d", 0);
   end
-  if (NUM_PHYS_FUNC != NUM_CMAC_PORT) begin
-    $fatal("No implementation for NUM_PHYS_FUNC (%d) != NUM_CMAC_PORT (%d)",
-      NUM_PHYS_FUNC, NUM_CMAC_PORT);
-  end
 end
 
 localparam C_NUM_USER_BLOCK = 1;
@@ -33,7 +29,7 @@ assign mod_rst_done[15:C_NUM_USER_BLOCK] = {(16-C_NUM_USER_BLOCK){1'b1}};
 
 rdma_onic_250mhz #(
   .NUM_QDMA    (NUM_QDMA),
-  .NUM_INTF    (NUM_PHYS_FUNC)
+  .NUM_INTF    (NUM_CMAC_PORT)
 ) rdma_onic_250mhz_inst (
   .s_axil_awvalid                   (axil_p2p_awvalid),
   .s_axil_awaddr                    (axil_p2p_awaddr),
@@ -70,7 +66,10 @@ rdma_onic_250mhz #(
   .m_axis_qdma_c2h_tuser_src            (m_axis_qdma_c2h_tuser_src),
   .m_axis_qdma_c2h_tuser_dst            (m_axis_qdma_c2h_tuser_dst),
   .m_axis_qdma_c2h_tuser_ptp_ts         (m_axis_qdma_c2h_tuser_ptp_ts),
+  .m_axis_qdma_c2h_tuser_qid            (m_axis_qdma_c2h_tuser_qid),
   .m_axis_qdma_c2h_tready               (m_axis_qdma_c2h_tready),
+
+  .s_axis_qdma_h2c_tuser_qid            (s_axis_qdma_h2c_tuser_qid),
 
   .m_axis_adap_tx_250mhz_tvalid         (m_axis_adap_tx_250mhz_tvalid),
   .m_axis_adap_tx_250mhz_tdata          (m_axis_adap_tx_250mhz_tdata),
@@ -138,11 +137,62 @@ rdma_onic_250mhz #(
   .m_o_qp_rq_cidb_wr_valid_hndshk            (m_o_qp_rq_cidb_wr_valid_hndshk),
   .m_i_qp_rq_cidb_wr_rdy                     (m_i_qp_rq_cidb_wr_rdy),
 
-  // Doorbell / QP handshaking: RX packet handler RQ doorbell
+  // ERNIC0: RX packet handler RQ doorbell
   .s_rx_pkt_hndler_i_rq_db_data_valid        (s_rx_pkt_hndler_i_rq_db_data_valid),
   .s_rx_pkt_hndler_i_rq_db_addr              (s_rx_pkt_hndler_i_rq_db_addr),
   .s_rx_pkt_hndler_i_rq_db_data              (s_rx_pkt_hndler_i_rq_db_data),
   .s_rx_pkt_hndler_o_rq_db_rdy               (s_rx_pkt_hndler_o_rq_db_rdy),
+
+  // ERNIC1: RoCE RX (CMAC1 -> classifier1 -> ERNIC1)
+  .m_axis_user2rdma1_roce_from_cmac_rx_tvalid (m_axis_user2rdma1_roce_from_cmac_rx_tvalid),
+  .m_axis_user2rdma1_roce_from_cmac_rx_tdata  (m_axis_user2rdma1_roce_from_cmac_rx_tdata),
+  .m_axis_user2rdma1_roce_from_cmac_rx_tkeep  (m_axis_user2rdma1_roce_from_cmac_rx_tkeep),
+  .m_axis_user2rdma1_roce_from_cmac_rx_tlast  (m_axis_user2rdma1_roce_from_cmac_rx_tlast),
+  .m_axis_user2rdma1_roce_from_cmac_rx_tready (m_axis_user2rdma1_roce_from_cmac_rx_tready),
+
+  // ERNIC1: TX path (ERNIC1 -> CMAC1)
+  .s_axis_rdma2user1_to_cmac_tx_tvalid        (s_axis_rdma2user1_to_cmac_tx_tvalid),
+  .s_axis_rdma2user1_to_cmac_tx_tdata         (s_axis_rdma2user1_to_cmac_tx_tdata),
+  .s_axis_rdma2user1_to_cmac_tx_tkeep         (s_axis_rdma2user1_to_cmac_tx_tkeep),
+  .s_axis_rdma2user1_to_cmac_tx_tlast         (s_axis_rdma2user1_to_cmac_tx_tlast),
+  .s_axis_rdma2user1_to_cmac_tx_tready        (s_axis_rdma2user1_to_cmac_tx_tready),
+
+  // ERNIC1: QDMA H2C non-RoCE bypass
+  .m_axis_user2rdma1_from_qdma_tx_tvalid      (m_axis_user2rdma1_from_qdma_tx_tvalid),
+  .m_axis_user2rdma1_from_qdma_tx_tdata       (m_axis_user2rdma1_from_qdma_tx_tdata),
+  .m_axis_user2rdma1_from_qdma_tx_tkeep       (m_axis_user2rdma1_from_qdma_tx_tkeep),
+  .m_axis_user2rdma1_from_qdma_tx_tlast       (m_axis_user2rdma1_from_qdma_tx_tlast),
+  .m_axis_user2rdma1_from_qdma_tx_tready      (m_axis_user2rdma1_from_qdma_tx_tready),
+
+  // ERNIC1: Immediate data sideband
+  .s_axis_rdma2user1_ieth_immdt_tdata         (s_axis_rdma2user1_ieth_immdt_tdata),
+  .s_axis_rdma2user1_ieth_immdt_tlast         (s_axis_rdma2user1_ieth_immdt_tlast),
+  .s_axis_rdma2user1_ieth_immdt_tvalid        (s_axis_rdma2user1_ieth_immdt_tvalid),
+  .s_axis_rdma2user1_ieth_immdt_trdy          (s_axis_rdma2user1_ieth_immdt_trdy),
+
+  // ERNIC1: send CQ doorbell
+  .s_resp_hndler1_i_send_cq_db_cnt_valid      (s_resp_hndler1_i_send_cq_db_cnt_valid),
+  .s_resp_hndler1_i_send_cq_db_addr           (s_resp_hndler1_i_send_cq_db_addr),
+  .s_resp_hndler1_i_send_cq_db_cnt            (s_resp_hndler1_i_send_cq_db_cnt),
+  .s_resp_hndler1_o_send_cq_db_rdy            (s_resp_hndler1_o_send_cq_db_rdy),
+
+  // ERNIC1: SQ producer-index doorbell
+  .m_o_qp1_sq_pidb_hndshk                     (m_o_qp1_sq_pidb_hndshk),
+  .m_o_qp1_sq_pidb_wr_addr_hndshk             (m_o_qp1_sq_pidb_wr_addr_hndshk),
+  .m_o_qp1_sq_pidb_wr_valid_hndshk            (m_o_qp1_sq_pidb_wr_valid_hndshk),
+  .m_i_qp1_sq_pidb_wr_rdy                     (m_i_qp1_sq_pidb_wr_rdy),
+
+  // ERNIC1: RQ consumer-index doorbell
+  .m_o_qp1_rq_cidb_hndshk                     (m_o_qp1_rq_cidb_hndshk),
+  .m_o_qp1_rq_cidb_wr_addr_hndshk             (m_o_qp1_rq_cidb_wr_addr_hndshk),
+  .m_o_qp1_rq_cidb_wr_valid_hndshk            (m_o_qp1_rq_cidb_wr_valid_hndshk),
+  .m_i_qp1_rq_cidb_wr_rdy                     (m_i_qp1_rq_cidb_wr_rdy),
+
+  // ERNIC1: RX packet handler RQ doorbell
+  .s_rx_pkt_hndler1_i_rq_db_data_valid        (s_rx_pkt_hndler1_i_rq_db_data_valid),
+  .s_rx_pkt_hndler1_i_rq_db_addr              (s_rx_pkt_hndler1_i_rq_db_addr),
+  .s_rx_pkt_hndler1_i_rq_db_data              (s_rx_pkt_hndler1_i_rq_db_data),
+  .s_rx_pkt_hndler1_o_rq_db_rdy               (s_rx_pkt_hndler1_o_rq_db_rdy),
 
   // Compute logic AXI-MM port
   .m_axi_compute_logic_awid                  (m_axi_compute_logic_awid),

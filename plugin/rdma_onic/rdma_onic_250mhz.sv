@@ -63,6 +63,9 @@ module rdma_onic_250mhz #(
   input   [16*NUM_INTF*NUM_QDMA-1:0] s_axis_qdma_h2c_tuser_src,
   input   [16*NUM_INTF*NUM_QDMA-1:0] s_axis_qdma_h2c_tuser_dst,
   input   [16*NUM_INTF*NUM_QDMA-1:0] s_axis_qdma_h2c_tuser_ptp_tag,
+  // Absolute qid, used on Path γ TX to demux normal-ethernet H2C traffic by
+  // owning CMAC (CMAC i owns [i*PER_CMAC_QUEUES, (i+1)*PER_CMAC_QUEUES)).
+  input   [11*NUM_INTF*NUM_QDMA-1:0] s_axis_qdma_h2c_tuser_qid,
   output     [NUM_INTF*NUM_QDMA-1:0] s_axis_qdma_h2c_tready,
 
   output     [NUM_INTF*NUM_QDMA-1:0] m_axis_qdma_c2h_tvalid,
@@ -73,6 +76,11 @@ module rdma_onic_250mhz #(
   output  [16*NUM_INTF*NUM_QDMA-1:0] m_axis_qdma_c2h_tuser_src,
   output  [16*NUM_INTF*NUM_QDMA-1:0] m_axis_qdma_c2h_tuser_dst,
   output  [80*NUM_INTF*NUM_QDMA-1:0] m_axis_qdma_c2h_tuser_ptp_ts,
+  // Path γ: absolute qid per-CMAC.  Under __rdma_enabled__, CMAC0 packets
+  // carry qid∈[0, PER_CMAC_QUEUES) and CMAC1 carries qid∈[PER_CMAC_QUEUES,
+  // 2*PER_CMAC_QUEUES).  qdma_subsystem with EXT_QID=1 honors this
+  // directly; legacy builds ignore it (field tied 0).
+  output  [11*NUM_INTF*NUM_QDMA-1:0] m_axis_qdma_c2h_tuser_qid,
   input      [NUM_INTF*NUM_QDMA-1:0] m_axis_qdma_c2h_tready,
 
   output     [NUM_INTF-1:0] m_axis_adap_tx_250mhz_tvalid,
@@ -96,56 +104,107 @@ module rdma_onic_250mhz #(
   output     [NUM_INTF-1:0] s_axis_adap_rx_250mhz_tready,
 
 `ifdef __rdma_enabled__
-  // RDMA AXI-Stream: RX path (CMAC -> classifier -> ERNIC)
+  // ERNIC0: RX path (CMAC0 -> classifier -> ERNIC0)
   output                         m_axis_user2rdma_roce_from_cmac_rx_tvalid,
   output                 [511:0] m_axis_user2rdma_roce_from_cmac_rx_tdata,
   output                  [63:0] m_axis_user2rdma_roce_from_cmac_rx_tkeep,
   output                         m_axis_user2rdma_roce_from_cmac_rx_tlast,
   input                          m_axis_user2rdma_roce_from_cmac_rx_tready,
 
-  // RDMA AXI-Stream: TX path (ERNIC -> CMAC)
+  // ERNIC0: TX path (ERNIC0 -> CMAC0)
   input                          s_axis_rdma2user_to_cmac_tx_tvalid,
   input                  [511:0] s_axis_rdma2user_to_cmac_tx_tdata,
   input                   [63:0] s_axis_rdma2user_to_cmac_tx_tkeep,
   input                          s_axis_rdma2user_to_cmac_tx_tlast,
   output                         s_axis_rdma2user_to_cmac_tx_tready,
 
-  // RDMA AXI-Stream: non-RoCE TX bypass (QDMA -> ERNIC TX merger)
+  // ERNIC0: non-RoCE TX bypass (QDMA func0 -> ERNIC0 TX merger)
   output                         m_axis_user2rdma_from_qdma_tx_tvalid,
   output                 [511:0] m_axis_user2rdma_from_qdma_tx_tdata,
   output                  [63:0] m_axis_user2rdma_from_qdma_tx_tkeep,
   output                         m_axis_user2rdma_from_qdma_tx_tlast,
   input                          m_axis_user2rdma_from_qdma_tx_tready,
 
-  // Immediate data sideband
+  // ERNIC0: Immediate data sideband
   input                   [63:0] s_axis_rdma2user_ieth_immdt_tdata,
   input                          s_axis_rdma2user_ieth_immdt_tlast,
   input                          s_axis_rdma2user_ieth_immdt_tvalid,
   output                         s_axis_rdma2user_ieth_immdt_trdy,
 
-  // Doorbell / QP handshaking: send CQ doorbell
+  // ERNIC0: send CQ doorbell
   input                          s_resp_hndler_i_send_cq_db_cnt_valid,
   input                    [9:0] s_resp_hndler_i_send_cq_db_addr,
   input                   [31:0] s_resp_hndler_i_send_cq_db_cnt,
   output                         s_resp_hndler_o_send_cq_db_rdy,
 
-  // Doorbell / QP handshaking: SQ producer-index doorbell
+  // ERNIC0: SQ producer-index doorbell
   output                  [15:0] m_o_qp_sq_pidb_hndshk,
   output                  [31:0] m_o_qp_sq_pidb_wr_addr_hndshk,
   output                         m_o_qp_sq_pidb_wr_valid_hndshk,
   input                          m_i_qp_sq_pidb_wr_rdy,
 
-  // Doorbell / QP handshaking: RQ consumer-index doorbell
+  // ERNIC0: RQ consumer-index doorbell
   output                  [15:0] m_o_qp_rq_cidb_hndshk,
   output                  [31:0] m_o_qp_rq_cidb_wr_addr_hndshk,
   output                         m_o_qp_rq_cidb_wr_valid_hndshk,
   input                          m_i_qp_rq_cidb_wr_rdy,
 
-  // Doorbell / QP handshaking: RX packet handler RQ doorbell
+  // ERNIC0: RX packet handler RQ doorbell
   input                          s_rx_pkt_hndler_i_rq_db_data_valid,
   input                    [9:0] s_rx_pkt_hndler_i_rq_db_addr,
   input                   [31:0] s_rx_pkt_hndler_i_rq_db_data,
   output                         s_rx_pkt_hndler_o_rq_db_rdy,
+
+  // ERNIC1: RX path (CMAC1 -> classifier -> ERNIC1)
+  output                         m_axis_user2rdma1_roce_from_cmac_rx_tvalid,
+  output                 [511:0] m_axis_user2rdma1_roce_from_cmac_rx_tdata,
+  output                  [63:0] m_axis_user2rdma1_roce_from_cmac_rx_tkeep,
+  output                         m_axis_user2rdma1_roce_from_cmac_rx_tlast,
+  input                          m_axis_user2rdma1_roce_from_cmac_rx_tready,
+
+  // ERNIC1: TX path (ERNIC1 -> CMAC1)
+  input                          s_axis_rdma2user1_to_cmac_tx_tvalid,
+  input                  [511:0] s_axis_rdma2user1_to_cmac_tx_tdata,
+  input                   [63:0] s_axis_rdma2user1_to_cmac_tx_tkeep,
+  input                          s_axis_rdma2user1_to_cmac_tx_tlast,
+  output                         s_axis_rdma2user1_to_cmac_tx_tready,
+
+  // ERNIC1: non-RoCE TX bypass (QDMA func1 -> ERNIC1 TX merger)
+  output                         m_axis_user2rdma1_from_qdma_tx_tvalid,
+  output                 [511:0] m_axis_user2rdma1_from_qdma_tx_tdata,
+  output                  [63:0] m_axis_user2rdma1_from_qdma_tx_tkeep,
+  output                         m_axis_user2rdma1_from_qdma_tx_tlast,
+  input                          m_axis_user2rdma1_from_qdma_tx_tready,
+
+  // ERNIC1: Immediate data sideband
+  input                   [63:0] s_axis_rdma2user1_ieth_immdt_tdata,
+  input                          s_axis_rdma2user1_ieth_immdt_tlast,
+  input                          s_axis_rdma2user1_ieth_immdt_tvalid,
+  output                         s_axis_rdma2user1_ieth_immdt_trdy,
+
+  // ERNIC1: send CQ doorbell
+  input                          s_resp_hndler1_i_send_cq_db_cnt_valid,
+  input                    [9:0] s_resp_hndler1_i_send_cq_db_addr,
+  input                   [31:0] s_resp_hndler1_i_send_cq_db_cnt,
+  output                         s_resp_hndler1_o_send_cq_db_rdy,
+
+  // ERNIC1: SQ producer-index doorbell
+  output                  [15:0] m_o_qp1_sq_pidb_hndshk,
+  output                  [31:0] m_o_qp1_sq_pidb_wr_addr_hndshk,
+  output                         m_o_qp1_sq_pidb_wr_valid_hndshk,
+  input                          m_i_qp1_sq_pidb_wr_rdy,
+
+  // ERNIC1: RQ consumer-index doorbell
+  output                  [15:0] m_o_qp1_rq_cidb_hndshk,
+  output                  [31:0] m_o_qp1_rq_cidb_wr_addr_hndshk,
+  output                         m_o_qp1_rq_cidb_wr_valid_hndshk,
+  input                          m_i_qp1_rq_cidb_wr_rdy,
+
+  // ERNIC1: RX packet handler RQ doorbell
+  input                          s_rx_pkt_hndler1_i_rq_db_data_valid,
+  input                    [9:0] s_rx_pkt_hndler1_i_rq_db_addr,
+  input                   [31:0] s_rx_pkt_hndler1_i_rq_db_data,
+  output                         s_rx_pkt_hndler1_o_rq_db_rdy,
 
   // Compute logic AXI-MM port
   output                         m_axi_compute_logic_awid,
@@ -269,35 +328,30 @@ module rdma_onic_250mhz #(
   // *************************************************************************
 
   // -----------------------------------------------------------------------
-  // Sideband passthrough: IETH/IMMDT
-  //   These are wired at the top level between ERNIC and the plugin.
-  //   The plugin just accepts them — no processing needed.
+  // ERNIC0 sideband tie-offs (IETH/IMMDT and doorbells)
   // -----------------------------------------------------------------------
   assign s_axis_rdma2user_ieth_immdt_trdy = 1'b1;
+  assign s_resp_hndler_o_send_cq_db_rdy   = 1'b1;
+  assign m_o_qp_sq_pidb_hndshk            = 16'd0;
+  assign m_o_qp_sq_pidb_wr_addr_hndshk    = 32'd0;
+  assign m_o_qp_sq_pidb_wr_valid_hndshk   = 1'b0;
+  assign m_o_qp_rq_cidb_hndshk            = 16'd0;
+  assign m_o_qp_rq_cidb_wr_addr_hndshk    = 32'd0;
+  assign m_o_qp_rq_cidb_wr_valid_hndshk   = 1'b0;
+  assign s_rx_pkt_hndler_o_rq_db_rdy      = 1'b1;
 
   // -----------------------------------------------------------------------
-  // Sideband passthrough: Doorbell signals
-  //   These are driven by ERNIC and consumed by ERNIC QP management.
-  //   The plugin passes them through unchanged. Since box_250mhz
-  //   connects them directly from the top-level ERNIC ports, we just
-  //   need to declare them (done in the port list) — no logic needed
-  //   in the plugin itself. The outputs need default values.
+  // ERNIC1 sideband tie-offs (same pattern as ERNIC0)
   // -----------------------------------------------------------------------
-  // send CQ doorbell: input from ERNIC -> output rdy back
-  assign s_resp_hndler_o_send_cq_db_rdy = 1'b1;
-
-  // SQ producer-index doorbell: plugin -> ERNIC; tie off (no compute logic)
-  assign m_o_qp_sq_pidb_hndshk          = 16'd0;
-  assign m_o_qp_sq_pidb_wr_addr_hndshk  = 32'd0;
-  assign m_o_qp_sq_pidb_wr_valid_hndshk = 1'b0;
-
-  // RQ consumer-index doorbell: plugin -> ERNIC; tie off (no compute logic)
-  assign m_o_qp_rq_cidb_hndshk          = 16'd0;
-  assign m_o_qp_rq_cidb_wr_addr_hndshk  = 32'd0;
-  assign m_o_qp_rq_cidb_wr_valid_hndshk = 1'b0;
-
-  // RX packet handler RQ doorbell: input from ERNIC -> output rdy back
-  assign s_rx_pkt_hndler_o_rq_db_rdy    = 1'b1;
+  assign s_axis_rdma2user1_ieth_immdt_trdy = 1'b1;
+  assign s_resp_hndler1_o_send_cq_db_rdy   = 1'b1;
+  assign m_o_qp1_sq_pidb_hndshk            = 16'd0;
+  assign m_o_qp1_sq_pidb_wr_addr_hndshk    = 32'd0;
+  assign m_o_qp1_sq_pidb_wr_valid_hndshk   = 1'b0;
+  assign m_o_qp1_rq_cidb_hndshk            = 16'd0;
+  assign m_o_qp1_rq_cidb_wr_addr_hndshk    = 32'd0;
+  assign m_o_qp1_rq_cidb_wr_valid_hndshk   = 1'b0;
+  assign s_rx_pkt_hndler1_o_rq_db_rdy      = 1'b1;
 
   // -----------------------------------------------------------------------
   // Compute AXI-MM: Tied off (no compute logic in this step)
@@ -334,18 +388,188 @@ module rdma_onic_250mhz #(
   // R channel
   assign m_axi_compute_logic_rready  = 1'b1;
 
+  // Path γ constant: per-CMAC queue stride used by both TX demux and RX qid
+  // tagging below.  Driver's ONIC_PER_CMAC_QUEUES must equal this value.
+  localparam [10:0] PER_CMAC_QUEUES = 11'd64;
+
   // -----------------------------------------------------------------------
-  // QDMA H2C -> ERNIC TX merger bypass (non-RoCE from host)
-  //   In RecoNIC, QDMA H2C is forwarded to the ERNIC TX merger so that
-  //   non-RoCE packets from host can be sent out via CMAC. We pass them
-  //   through to the m_axis_user2rdma_from_qdma_tx port.
+  // ERNIC user2rdma_from_qdma_tx INPUTS — tied off (Path γ).
+  //
+  // Rationale: ERNIC reads WQE descriptors from host memory via its own AXI
+  // master (configured by SQBA/RQBA/CQBA CSRs).  The `user2rdma_from_qdma_*`
+  // sideband is an optional streaming-WQE path that this dual-personality
+  // design does not use.  QDMA H2C is reserved entirely for normal netdev
+  // TX, which is demultiplexed below to the correct CMAC TX.
   // -----------------------------------------------------------------------
-  // For NUM_QDMA == 1 case: direct passthrough
-  assign m_axis_user2rdma_from_qdma_tx_tvalid = s_axis_qdma_h2c_tvalid[0];
-  assign m_axis_user2rdma_from_qdma_tx_tdata  = s_axis_qdma_h2c_tdata[511:0];
-  assign m_axis_user2rdma_from_qdma_tx_tkeep  = s_axis_qdma_h2c_tkeep[63:0];
-  assign m_axis_user2rdma_from_qdma_tx_tlast  = s_axis_qdma_h2c_tlast[0];
-  assign s_axis_qdma_h2c_tready[0]            = m_axis_user2rdma_from_qdma_tx_tready;
+  assign m_axis_user2rdma_from_qdma_tx_tvalid  = 1'b0;
+  assign m_axis_user2rdma_from_qdma_tx_tdata   = 512'd0;
+  assign m_axis_user2rdma_from_qdma_tx_tkeep   = 64'd0;
+  assign m_axis_user2rdma_from_qdma_tx_tlast   = 1'b0;
+  assign m_axis_user2rdma1_from_qdma_tx_tvalid = 1'b0;
+  assign m_axis_user2rdma1_from_qdma_tx_tdata  = 512'd0;
+  assign m_axis_user2rdma1_from_qdma_tx_tkeep  = 64'd0;
+  assign m_axis_user2rdma1_from_qdma_tx_tlast  = 1'b0;
+
+  // =======================================================================
+  // H2C → CMAC TX demux + per-CMAC arbiter (Path γ)
+  // =======================================================================
+  //
+  //   QDMA H2C slot 0 (single stream, NUM_PHYS_FUNC=1)
+  //       │
+  //       ▼
+  //  demux by tuser.qid
+  //     qid < PER_CMAC_QUEUES ──► CMAC0 TX path ◄── ERNIC0 TX (rdma2user_…)
+  //     qid ≥ PER_CMAC_QUEUES ──► CMAC1 TX path ◄── ERNIC1 TX (rdma2user1_…)
+  //                                    │
+  //                                    ▼
+  //                    per-CMAC packet-atomic round-robin arbiter
+  //                                    │
+  //                                    ▼
+  //                          m_axis_adap_tx_250mhz[i]
+  //
+  // Demux is packet-atomic: once the first beat of a packet is routed to
+  // a CMAC, subsequent beats of the same packet follow until tlast.
+  // Each per-CMAC arbiter is the same round-robin FSM used on the RX side.
+  // H2C slot 1 is unused (shell drives only slot 0 with NUM_PHYS_FUNC=1);
+  // we tie its tready high to absorb any driver glitch without stalling.
+  // =======================================================================
+
+  // ----- H2C packet-atomic demux by qid ----------------------------------
+  wire        h2c_tvalid = s_axis_qdma_h2c_tvalid[0];
+  wire [511:0] h2c_tdata = s_axis_qdma_h2c_tdata[511:0];
+  wire [63:0]  h2c_tkeep = s_axis_qdma_h2c_tkeep[63:0];
+  wire        h2c_tlast  = s_axis_qdma_h2c_tlast[0];
+  wire [15:0] h2c_tuser_size    = s_axis_qdma_h2c_tuser_size[15:0];
+  wire [15:0] h2c_tuser_src     = s_axis_qdma_h2c_tuser_src[15:0];
+  wire [15:0] h2c_tuser_dst     = s_axis_qdma_h2c_tuser_dst[15:0];
+  wire [15:0] h2c_tuser_ptp_tag = s_axis_qdma_h2c_tuser_ptp_tag[15:0];
+  wire [10:0] h2c_tuser_qid     = s_axis_qdma_h2c_tuser_qid[10:0];
+
+  // Demux state: lock to chosen CMAC until tlast so a packet isn't split.
+  reg        h2c_dmux_locked;
+  reg        h2c_dmux_sel;     // 0 = CMAC0 path, 1 = CMAC1 path
+  wire       h2c_first_beat_sel = (h2c_tuser_qid >= PER_CMAC_QUEUES);
+  wire       h2c_cur_sel        = h2c_dmux_locked ? h2c_dmux_sel : h2c_first_beat_sel;
+
+  // Per-CMAC "normal TX" wires (QDMA side of the per-CMAC arbiter)
+  wire        n0_tvalid = h2c_tvalid && (h2c_cur_sel == 1'b0);
+  wire        n1_tvalid = h2c_tvalid && (h2c_cur_sel == 1'b1);
+  wire        n0_tready;
+  wire        n1_tready;
+  wire        h2c_granted_ready = (h2c_cur_sel == 1'b0) ? n0_tready : n1_tready;
+
+  assign s_axis_qdma_h2c_tready[0] = h2c_granted_ready;
+  // Slot 1 unused with NUM_PHYS_FUNC=1; absorb any spurious valid.
+  assign s_axis_qdma_h2c_tready[1] = 1'b1;
+
+  always @(posedge axis_aclk) begin
+    if (~axis_aresetn) begin
+      h2c_dmux_locked <= 1'b0;
+      h2c_dmux_sel    <= 1'b0;
+    end
+    else if (h2c_tvalid && h2c_granted_ready) begin
+      if (~h2c_dmux_locked) begin
+        h2c_dmux_sel    <= h2c_first_beat_sel;
+        h2c_dmux_locked <= ~h2c_tlast;
+      end
+      else if (h2c_tlast) begin
+        h2c_dmux_locked <= 1'b0;
+      end
+    end
+  end
+
+  // ----- Per-CMAC TX arbiter: {normal-TX, ERNIC-TX} → CMAC TX -----------
+  // CMAC_i arbiter inputs: normal TX from demux, ERNIC_i TX.
+  // Mirrors the RX-side fair round-robin.
+  generate for (genvar cmac = 0; cmac < 2; cmac++) begin : gen_tx_arb
+    wire n_tvalid, n_tready, n_tlast;
+    wire [511:0] n_tdata;
+    wire [63:0]  n_tkeep;
+
+    wire e_tvalid, e_tready, e_tlast;
+    wire [511:0] e_tdata;
+    wire [63:0]  e_tkeep;
+
+    // Wire normal-TX (QDMA demuxed stream) for this CMAC
+    if (cmac == 0) begin
+      assign n_tvalid = n0_tvalid;
+      assign n0_tready = n_tready;
+      assign n_tdata  = h2c_tdata;
+      assign n_tkeep  = h2c_tkeep;
+      assign n_tlast  = h2c_tlast;
+      // Wire ERNIC0 TX
+      assign e_tvalid = s_axis_rdma2user_to_cmac_tx_tvalid;
+      assign s_axis_rdma2user_to_cmac_tx_tready = e_tready;
+      assign e_tdata  = s_axis_rdma2user_to_cmac_tx_tdata;
+      assign e_tkeep  = s_axis_rdma2user_to_cmac_tx_tkeep;
+      assign e_tlast  = s_axis_rdma2user_to_cmac_tx_tlast;
+    end
+    else begin
+      assign n_tvalid = n1_tvalid;
+      assign n1_tready = n_tready;
+      assign n_tdata  = h2c_tdata;
+      assign n_tkeep  = h2c_tkeep;
+      assign n_tlast  = h2c_tlast;
+      assign e_tvalid = s_axis_rdma2user1_to_cmac_tx_tvalid;
+      assign s_axis_rdma2user1_to_cmac_tx_tready = e_tready;
+      assign e_tdata  = s_axis_rdma2user1_to_cmac_tx_tdata;
+      assign e_tkeep  = s_axis_rdma2user1_to_cmac_tx_tkeep;
+      assign e_tlast  = s_axis_rdma2user1_to_cmac_tx_tlast;
+    end
+
+    // Round-robin arbiter (same pattern as RX side): select normal or
+    // ERNIC, lock for packet duration, rotate priority after tlast.
+    reg tx_arb_locked;
+    reg tx_arb_last;   // 0 = normal was last, 1 = ERNIC was last
+    wire [1:0] tx_req = {e_tvalid, n_tvalid};
+    wire       tx_grant =
+        tx_arb_locked ? tx_arb_last :
+        (tx_req[1] && (~tx_req[0] || tx_arb_last == 1'b0)) ? 1'b1 : 1'b0;
+
+    wire tx_granted_tvalid = (tx_grant == 1'b0) ? n_tvalid : e_tvalid;
+    wire tx_granted_tlast  = (tx_grant == 1'b0) ? n_tlast  : e_tlast;
+    wire tx_out_tready     = m_axis_adap_tx_250mhz_tready[cmac];
+    wire tx_xfer = tx_granted_tvalid && tx_out_tready;
+
+    always @(posedge axis_aclk) begin
+      if (~axis_aresetn) begin
+        tx_arb_locked <= 1'b0;
+        tx_arb_last   <= 1'b0;
+      end
+      else if (tx_xfer) begin
+        tx_arb_last   <= tx_grant;
+        tx_arb_locked <= ~tx_granted_tlast;
+      end
+    end
+
+    // Mux outputs to CMAC TX
+    assign m_axis_adap_tx_250mhz_tvalid[cmac] = tx_granted_tvalid;
+    // Per-CMAC slice into 512/64-bit lanes [cmac*W +: W]
+    if (cmac == 0) begin
+      assign m_axis_adap_tx_250mhz_tdata[511:0]      = (tx_grant == 1'b0) ? n_tdata : e_tdata;
+      assign m_axis_adap_tx_250mhz_tkeep[63:0]       = (tx_grant == 1'b0) ? n_tkeep : e_tkeep;
+      assign m_axis_adap_tx_250mhz_tlast[0]          = tx_granted_tlast;
+      assign m_axis_adap_tx_250mhz_tuser_size[15:0]  = (tx_grant == 1'b0) ? h2c_tuser_size : 16'd0;
+      assign m_axis_adap_tx_250mhz_tuser_src[15:0]   = (tx_grant == 1'b0) ? h2c_tuser_src  : 16'd0;
+      // tuser_dst bit indicates CMAC target (original convention `1 << (6+i)` for CMAC i)
+      assign m_axis_adap_tx_250mhz_tuser_dst[15:0]   = 16'h1 << 6;
+      assign m_axis_adap_tx_250mhz_tuser_ptp_tag[15:0] = (tx_grant == 1'b0) ? h2c_tuser_ptp_tag : 16'd0;
+    end
+    else begin
+      assign m_axis_adap_tx_250mhz_tdata[1023:512]    = (tx_grant == 1'b0) ? n_tdata : e_tdata;
+      assign m_axis_adap_tx_250mhz_tkeep[127:64]      = (tx_grant == 1'b0) ? n_tkeep : e_tkeep;
+      assign m_axis_adap_tx_250mhz_tlast[1]           = tx_granted_tlast;
+      assign m_axis_adap_tx_250mhz_tuser_size[31:16]  = (tx_grant == 1'b0) ? h2c_tuser_size : 16'd0;
+      assign m_axis_adap_tx_250mhz_tuser_src[31:16]   = (tx_grant == 1'b0) ? h2c_tuser_src  : 16'd0;
+      assign m_axis_adap_tx_250mhz_tuser_dst[31:16]   = 16'h1 << 7;
+      assign m_axis_adap_tx_250mhz_tuser_ptp_tag[31:16] = (tx_grant == 1'b0) ? h2c_tuser_ptp_tag : 16'd0;
+    end
+
+    // Backpressure to the granted source only
+    assign n_tready = (tx_grant == 1'b0) && tx_out_tready;
+    assign e_tready = (tx_grant == 1'b1) && tx_out_tready;
+  end
+  endgenerate
 
   // -----------------------------------------------------------------------
   // RX PATH: CMAC RX -> Classifier -> Filter -> {ERNIC, QDMA C2H}
@@ -426,41 +650,186 @@ module rdma_onic_250mhz #(
     .m_axis_host_tlast  (flt_host_tlast)
   );
 
-  // Connect filter RDMA output to ERNIC sideband
+  // -----------------------------------------------------------------------
+  // ERNIC0/CMAC0: RX path
+  // -----------------------------------------------------------------------
   assign m_axis_user2rdma_roce_from_cmac_rx_tvalid = flt_rdma_tvalid;
   assign m_axis_user2rdma_roce_from_cmac_rx_tdata  = flt_rdma_tdata;
   assign m_axis_user2rdma_roce_from_cmac_rx_tkeep  = flt_rdma_tkeep;
   assign m_axis_user2rdma_roce_from_cmac_rx_tlast  = flt_rdma_tlast;
   assign flt_rdma_tready = m_axis_user2rdma_roce_from_cmac_rx_tready;
 
-  // Connect filter host output to QDMA C2H (interface 0)
-  assign m_axis_qdma_c2h_tvalid[0]                 = flt_host_tvalid;
-  assign m_axis_qdma_c2h_tdata[511:0]              = flt_host_tdata;
-  assign m_axis_qdma_c2h_tkeep[63:0]               = flt_host_tkeep;
-  assign m_axis_qdma_c2h_tlast[0]                  = flt_host_tlast;
-  assign m_axis_qdma_c2h_tuser_size[15:0]          = s_axis_adap_rx_250mhz_tuser_size[15:0];
-  assign m_axis_qdma_c2h_tuser_src[15:0]           = s_axis_adap_rx_250mhz_tuser_src[15:0];
-  assign m_axis_qdma_c2h_tuser_dst[15:0]           = 16'h1;
-  assign m_axis_qdma_c2h_tuser_ptp_ts[79:0]        = s_axis_adap_rx_250mhz_tuser_ptp_ts[79:0];
-  assign flt_host_tready = m_axis_qdma_c2h_tready[0];
+  // --- CMAC0 → QDMA slot-0 wiring postponed: see packet-atomic arbiter
+  //     below which merges CMAC0 + CMAC1 non-RoCE streams into slot 0. ---
+
+  // CMAC0 TX is driven by the per-CMAC TX arbiter declared earlier in the
+  // H2C → CMAC TX section.  ERNIC0's rdma2user_to_cmac_tx_* feeds that
+  // arbiter as the "ERNIC" input; QDMA H2C demuxed for qid<64 feeds the
+  // "normal" input.  No direct driver here.
 
   // -----------------------------------------------------------------------
-  // TX PATH: ERNIC TX + QDMA H2C -> Arbiter -> CMAC TX
-  //
-  // The ERNIC TX merger happens upstream of us (ERNIC merges its own
-  // RoCE TX with the non-RoCE QDMA TX we sent via
-  // m_axis_user2rdma_from_qdma_tx). The merged result comes back on
-  // s_axis_rdma2user_to_cmac_tx. We just connect that directly to CMAC TX.
+  // ERNIC1/CMAC1: RX path — classifier + filter on CMAC1 input
   // -----------------------------------------------------------------------
-  assign m_axis_adap_tx_250mhz_tvalid[0]               = s_axis_rdma2user_to_cmac_tx_tvalid;
-  assign m_axis_adap_tx_250mhz_tdata[511:0]             = s_axis_rdma2user_to_cmac_tx_tdata;
-  assign m_axis_adap_tx_250mhz_tkeep[63:0]              = s_axis_rdma2user_to_cmac_tx_tkeep;
-  assign m_axis_adap_tx_250mhz_tlast[0]                 = s_axis_rdma2user_to_cmac_tx_tlast;
-  assign m_axis_adap_tx_250mhz_tuser_size[15:0]         = 16'd0;
-  assign m_axis_adap_tx_250mhz_tuser_src[15:0]          = 16'd0;
-  assign m_axis_adap_tx_250mhz_tuser_dst[15:0]          = 16'h1 << 6;
-  assign m_axis_adap_tx_250mhz_tuser_ptp_tag[15:0]      = 16'd0;
-  assign s_axis_rdma2user_to_cmac_tx_tready              = m_axis_adap_tx_250mhz_tready[0];
+  wire        clf1_out_tvalid;
+  wire        clf1_out_tready;
+  wire [511:0] clf1_out_tdata;
+  wire [63:0]  clf1_out_tkeep;
+  wire        clf1_out_tlast;
+  wire        clf1_is_rdma;
+  wire        clf1_is_rdma_valid;
+
+  wire        flt1_rdma_tvalid;
+  wire        flt1_rdma_tready;
+  wire [511:0] flt1_rdma_tdata;
+  wire [63:0]  flt1_rdma_tkeep;
+  wire        flt1_rdma_tlast;
+
+  wire        flt1_host_tvalid;
+  wire        flt1_host_tready;
+  wire [511:0] flt1_host_tdata;
+  wire [63:0]  flt1_host_tkeep;
+  wire        flt1_host_tlast;
+
+  packet_classifier_rtl classifier1_inst (
+    .clk            (axis_aclk),
+    .rst_n          (axis_aresetn),
+
+    .s_axis_tvalid  (s_axis_adap_rx_250mhz_tvalid[1]),
+    .s_axis_tready  (s_axis_adap_rx_250mhz_tready[1]),
+    .s_axis_tdata   (s_axis_adap_rx_250mhz_tdata[1023:512]),
+    .s_axis_tkeep   (s_axis_adap_rx_250mhz_tkeep[127:64]),
+    .s_axis_tlast   (s_axis_adap_rx_250mhz_tlast[1]),
+
+    .m_axis_tvalid  (clf1_out_tvalid),
+    .m_axis_tready  (clf1_out_tready),
+    .m_axis_tdata   (clf1_out_tdata),
+    .m_axis_tkeep   (clf1_out_tkeep),
+    .m_axis_tlast   (clf1_out_tlast),
+
+    .is_rdma        (clf1_is_rdma),
+    .is_rdma_valid  (clf1_is_rdma_valid)
+  );
+
+  packet_filter filter1_inst (
+    .clk            (axis_aclk),
+    .rst_n          (axis_aresetn),
+
+    .s_axis_tvalid  (clf1_out_tvalid),
+    .s_axis_tready  (clf1_out_tready),
+    .s_axis_tdata   (clf1_out_tdata),
+    .s_axis_tkeep   (clf1_out_tkeep),
+    .s_axis_tlast   (clf1_out_tlast),
+    .is_rdma        (clf1_is_rdma),
+    .is_rdma_valid  (clf1_is_rdma_valid),
+
+    .m_axis_rdma_tvalid (flt1_rdma_tvalid),
+    .m_axis_rdma_tready (flt1_rdma_tready),
+    .m_axis_rdma_tdata  (flt1_rdma_tdata),
+    .m_axis_rdma_tkeep  (flt1_rdma_tkeep),
+    .m_axis_rdma_tlast  (flt1_rdma_tlast),
+
+    .m_axis_host_tvalid (flt1_host_tvalid),
+    .m_axis_host_tready (flt1_host_tready),
+    .m_axis_host_tdata  (flt1_host_tdata),
+    .m_axis_host_tkeep  (flt1_host_tkeep),
+    .m_axis_host_tlast  (flt1_host_tlast)
+  );
+
+  assign m_axis_user2rdma1_roce_from_cmac_rx_tvalid = flt1_rdma_tvalid;
+  assign m_axis_user2rdma1_roce_from_cmac_rx_tdata  = flt1_rdma_tdata;
+  assign m_axis_user2rdma1_roce_from_cmac_rx_tkeep  = flt1_rdma_tkeep;
+  assign m_axis_user2rdma1_roce_from_cmac_rx_tlast  = flt1_rdma_tlast;
+  assign flt1_rdma_tready = m_axis_user2rdma1_roce_from_cmac_rx_tready;
+
+  // =======================================================================
+  // CMAC0 + CMAC1 non-RoCE RX → QDMA slot 0 arbiter (Path γ)
+  // =======================================================================
+  // Fair packet-atomic round-robin across both CMACs' non-RoCE streams.
+  // Once a packet's first beat is accepted on slot 0, the arbiter locks to
+  // that source until tlast+tready, then rotates priority to the other.
+  //
+  // Queue ID tagging: CMAC0 → qid∈[0, PER_CMAC_QUEUES), CMAC1 → qid∈
+  // [PER_CMAC_QUEUES, 2*PER_CMAC_QUEUES).  MVP uses fixed qid=cmac*N so all
+  // traffic for each CMAC lands on its first netdev queue.  Per-CMAC RSS
+  // spreading is a follow-up (add per-CMAC counter + qid = base + cnt%N).
+  // The driver's secondary netdev MUST set qid_base = PER_CMAC_QUEUES to
+  // match this mapping.
+  // =======================================================================
+  // Note: PER_CMAC_QUEUES is declared above near the TX demux.
+
+  reg  arb_locked;
+  reg  arb_last;   // last granted source (0 or 1), rotates priority
+  wire [1:0] req;
+  wire grant;
+  wire xfer;
+  wire this_beat_tlast;
+
+  assign req = {flt1_host_tvalid, flt_host_tvalid};
+
+  // Round-robin grant: when locked, stay on current source.  Otherwise grant
+  // to the source that wasn't last served, falling back to whichever has a
+  // pending packet.
+  assign grant = arb_locked ? arb_last :
+                 (req[1] && (~req[0] || arb_last == 1'b0)) ? 1'b1 : 1'b0;
+
+  assign this_beat_tlast = (grant == 1'b0) ?
+                           (flt_host_tvalid  && flt_host_tlast) :
+                           (flt1_host_tvalid && flt1_host_tlast);
+
+  wire granted_tvalid = (grant == 1'b0) ? flt_host_tvalid : flt1_host_tvalid;
+  wire out_tready_0   = m_axis_qdma_c2h_tready[0];
+  assign xfer = granted_tvalid && out_tready_0;
+
+  always @(posedge axis_aclk) begin
+    if (~axis_aresetn) begin
+      arb_locked <= 1'b0;
+      arb_last   <= 1'b0;
+    end
+    else if (xfer) begin
+      arb_last   <= grant;
+      // Lock state tracks "packet in progress" (false on tlast beat)
+      arb_locked <= ~this_beat_tlast;
+    end
+  end
+
+  // Slot 0: multiplexed output of the granted source.  tvalid must reflect
+  // ONLY the granted source — if the other source has data but the granted
+  // source is mid-packet idle, we must not falsely assert valid with the
+  // wrong data muxed out.
+  assign m_axis_qdma_c2h_tvalid[0]         = granted_tvalid;
+  assign m_axis_qdma_c2h_tdata[511:0]      = (grant == 1'b0) ? flt_host_tdata : flt1_host_tdata;
+  assign m_axis_qdma_c2h_tkeep[63:0]       = (grant == 1'b0) ? flt_host_tkeep : flt1_host_tkeep;
+  assign m_axis_qdma_c2h_tlast[0]          = (grant == 1'b0) ? flt_host_tlast : flt1_host_tlast;
+  assign m_axis_qdma_c2h_tuser_size[15:0]  = (grant == 1'b0) ?
+                                             s_axis_adap_rx_250mhz_tuser_size[15:0] :
+                                             s_axis_adap_rx_250mhz_tuser_size[31:16];
+  assign m_axis_qdma_c2h_tuser_src[15:0]   = (grant == 1'b0) ?
+                                             s_axis_adap_rx_250mhz_tuser_src[15:0] :
+                                             s_axis_adap_rx_250mhz_tuser_src[31:16];
+  assign m_axis_qdma_c2h_tuser_dst[15:0]   = (grant == 1'b0) ? 16'h1 : 16'h2;
+  assign m_axis_qdma_c2h_tuser_ptp_ts[79:0] = (grant == 1'b0) ?
+                                             s_axis_adap_rx_250mhz_tuser_ptp_ts[79:0] :
+                                             s_axis_adap_rx_250mhz_tuser_ptp_ts[159:80];
+  // CMAC-encoded absolute qid — consumed by qdma_subsystem when EXT_QID=1
+  assign m_axis_qdma_c2h_tuser_qid[10:0]   = (grant == 1'b0) ? 11'd0 : PER_CMAC_QUEUES;
+
+  // Backpressure: ready only to the granted source
+  assign flt_host_tready  = (grant == 1'b0) && out_tready_0;
+  assign flt1_host_tready = (grant == 1'b1) && out_tready_0;
+
+  // Slot 1 is unused with NUM_PHYS_FUNC=1 — tie off cleanly.
+  assign m_axis_qdma_c2h_tvalid[1]            = 1'b0;
+  assign m_axis_qdma_c2h_tdata[1023:512]      = 512'h0;
+  assign m_axis_qdma_c2h_tkeep[127:64]        = 64'h0;
+  assign m_axis_qdma_c2h_tlast[1]             = 1'b0;
+  assign m_axis_qdma_c2h_tuser_size[31:16]    = 16'h0;
+  assign m_axis_qdma_c2h_tuser_src[31:16]     = 16'h0;
+  assign m_axis_qdma_c2h_tuser_dst[31:16]     = 16'h0;
+  assign m_axis_qdma_c2h_tuser_ptp_ts[159:80] = 80'h0;
+  assign m_axis_qdma_c2h_tuser_qid[21:11]     = 11'h0;
+
+  // CMAC1 TX is driven by the per-CMAC TX arbiter declared earlier in the
+  // H2C → CMAC TX section.  See gen_tx_arb generate block for cmac==1.
 
 `else
   // *************************************************************************
@@ -514,6 +883,8 @@ module rdma_onic_250mhz #(
         assign m_axis_qdma_c2h_tuser_size[`getvec(16, 2*ii+i)] = axis_qdma_c2h_tuser[`getvec(16, 3*ii)];
         assign m_axis_qdma_c2h_tuser_src[`getvec(16, 2*ii+i)]  = axis_qdma_c2h_tuser[`getvec(16, 3*ii+1)];
         assign m_axis_qdma_c2h_tuser_dst[`getvec(16, 2*ii+i)]  = axis_qdma_c2h_tuser[`getvec(16, 3*ii+2)];
+        // tuser_qid tied to 0 — non-RDMA passthrough doesn't use Path γ.
+        assign m_axis_qdma_c2h_tuser_qid[`getvec(11, 2*ii+i)]  = 11'h0;
         assign axis_qdma_c2h_tready[ii]                        = m_axis_qdma_c2h_tready[2*ii+i];
       end
 
@@ -598,6 +969,8 @@ module rdma_onic_250mhz #(
       assign m_axis_qdma_c2h_tuser_src[`getvec(16, i)]        = axis_qdma_c2h_tuser[16+:16];
       assign m_axis_qdma_c2h_tuser_dst[`getvec(16, i)]        = 16'h1 << i;
       assign m_axis_qdma_c2h_tuser_ptp_ts[`getvec(80, i)]     = s_axis_adap_rx_250mhz_tuser_ptp_ts[`getvec(80, i)];
+      // tuser_qid tied to 0 — non-RDMA passthrough doesn't use Path γ.
+      assign m_axis_qdma_c2h_tuser_qid[`getvec(11, i)]        = 11'h0;
 
       axi_stream_pipeline tx_ppl_inst (
         .s_axis_tvalid (s_axis_qdma_h2c_tvalid[i]),

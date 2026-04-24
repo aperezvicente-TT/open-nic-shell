@@ -21,7 +21,13 @@ module qdma_subsystem_function #(
   parameter int FUNC_ID     = 0,
   parameter int QDMA_ID     = 0,
   parameter int MIN_PKT_LEN = 64,
-  parameter int MAX_PKT_LEN = 1518
+  parameter int MAX_PKT_LEN = 1518,
+  // When EXT_QID=1, the C2H output queue ID is taken from s_axis_c2h_tuser_qid
+  // (captured on the first beat of each packet) instead of the internal
+  // hash+indir_table+q_base path.  Used by Path γ single-slot multi-CMAC
+  // builds where the plugin encodes CMAC identity into absolute qid before
+  // the stream reaches this module.  Default 0 preserves legacy RSS path.
+  parameter int EXT_QID     = 0
 ) (
   input          s_axil_awvalid,
   input   [31:0] s_axil_awaddr,
@@ -56,6 +62,10 @@ module qdma_subsystem_function #(
   output  [15:0] m_axis_h2c_tuser_src,
   output  [15:0] m_axis_h2c_tuser_dst,
   output  [15:0] m_axis_h2c_tuser_ptp_tag,
+  // Absolute qid forwarded through the h2c pipeline so downstream (plugin)
+  // can demux normal-ethernet H2C traffic to the correct CMAC based on qid
+  // range (CMAC i owns [i*PER_CMAC_QUEUES, (i+1)*PER_CMAC_QUEUES)).
+  output  [10:0] m_axis_h2c_tuser_qid,
   input          m_axis_h2c_tready,
 
   input          s_axis_c2h_tvalid,
@@ -66,6 +76,7 @@ module qdma_subsystem_function #(
   input   [15:0] s_axis_c2h_tuser_src,
   input   [15:0] s_axis_c2h_tuser_dst,
   input   [79:0] s_axis_c2h_tuser_ptp_ts,
+  input   [10:0] s_axis_c2h_tuser_qid,  // absolute qid when EXT_QID=1; ignored otherwise
   output         s_axis_c2h_tready,
 
   output         m_axis_c2h_tvalid,
@@ -205,8 +216,6 @@ module qdma_subsystem_function #(
   assign s_axis_h2c_tready   = axis_h2c_tready && h2c_match;
 
   generate if (QDMA_ID == 0) begin
-    // So far we do not have additional processing on TX packets.  Replace the
-    // following portion if later TSO/GSO is to be implemented.
     axi_stream_register_slice #(
       .TDATA_W (512),
       .TUSER_W (16),
@@ -256,6 +265,65 @@ module qdma_subsystem_function #(
   end
   endgenerate
 
+  // ----- H2C qid side-FIFO -----------------------------------------------
+  // Main h2c slice carries only {size} in TUSER (original 16-bit width).
+  // Track qid via a small FIFO: write on PRE-slice FIRST BEAT of each
+  // packet (so the FIFO is populated before the slice emits that packet's
+  // first output beat), read on POST-slice tlast handshake.  Packets enter
+  // and exit in order, so the FIFO stays aligned with data in flight.
+  reg s_h2c_in_pkt;
+  always @(posedge axis_aclk) begin
+    if (~axil_aresetn) s_h2c_in_pkt <= 1'b0;
+    else if (s_axis_h2c_tvalid && s_axis_h2c_tready) begin
+      if (s_axis_h2c_tlast) s_h2c_in_pkt <= 1'b0;
+      else                   s_h2c_in_pkt <= 1'b1;
+    end
+  end
+  wire h2c_qid_wr = s_axis_h2c_tvalid && s_axis_h2c_tready && ~s_h2c_in_pkt;
+  wire h2c_qid_rd = m_axis_h2c_tvalid && m_axis_h2c_tready && m_axis_h2c_tlast;
+  wire [10:0] h2c_qid_dout;
+  wire        h2c_qid_empty;
+
+  xpm_fifo_sync #(
+    .DOUT_RESET_VALUE    ("0"),
+    .ECC_MODE            ("no_ecc"),
+    .FIFO_MEMORY_TYPE    ("distributed"),
+    .FIFO_WRITE_DEPTH    (16),
+    .READ_DATA_WIDTH     (11),
+    .READ_MODE           ("fwft"),
+    .WRITE_DATA_WIDTH    (11)
+  ) h2c_qid_fifo (
+    .wr_en         (h2c_qid_wr),
+    .din           (s_axis_h2c_tuser_qid),
+    .rd_en         (h2c_qid_rd),
+    .dout          (h2c_qid_dout),
+    .empty         (h2c_qid_empty),
+    .full          (),
+    .wr_ack        (),
+    .data_valid    (),
+    .wr_data_count (),
+    .rd_data_count (),
+    .almost_empty  (),
+    .almost_full   (),
+    .overflow      (),
+    .underflow     (),
+    .prog_empty    (),
+    .prog_full     (),
+    .sleep         (1'b0),
+    .sbiterr       (),
+    .dbiterr       (),
+    .injectsbiterr (1'b0),
+    .injectdbiterr (1'b0),
+    .wr_clk        (axis_aclk),
+    .rst           (~axil_aresetn),
+    .rd_rst_busy   (),
+    .wr_rst_busy   ()
+  );
+
+  // When the FIFO is briefly empty (first packet still propagating through
+  // the slice), fall back to the pre-slice value directly.
+  assign m_axis_h2c_tuser_qid = h2c_qid_empty ? s_axis_h2c_tuser_qid : h2c_qid_dout;
+
   generate for (genvar i = 0; i < 64; i++) begin
     assign axis_h2c_tkeep[i] = (axis_h2c_tvalid && axis_h2c_tready && axis_h2c_tlast) ?
                                ((axis_h2c_tuser_size[5:0] - 6'd1) >= i) : 1'b1;
@@ -263,20 +331,21 @@ module qdma_subsystem_function #(
   endgenerate
 
   assign m_axis_h2c_tuser_src     = 16'h1 << FUNC_ID;
-  assign m_axis_h2c_tuser_dst     = 0;
+  assign m_axis_h2c_tuser_dst     = 16'h1 << FUNC_ID;
   assign m_axis_h2c_tuser_ptp_tag = s_axis_h2c_tuser_ptp_tag;
 
   // ==========
   // RX path
   // ==========
 
-  // Post-slice PTP timestamp (aligned with axis_c2h_* timing)
+  // Post-slice sidebands (aligned with axis_c2h_* timing).  qid tracked via
+  // a dedicated side-FIFO below; the main c2h slice TUSER stays narrow (96
+  // bits = {ptp_ts, size}) to avoid timing pressure on the 250 MHz domain.
   wire [79:0] axis_c2h_tuser_ptp_ts;
 
   generate if (QDMA_ID == 0) begin
-    // RX packets should have valid `tuser_size` interpreted as packet size.
-    // TUSER widened to 96 bits: {ptp_ts[79:0], size[15:0]} so the PTP
-    // timestamp crosses the register slice and stays aligned with data.
+    // TUSER 96 bits: {ptp_ts[79:0], size[15:0]}.  Qid crosses the slice via
+    // a separate ordered FIFO, keyed on the tlast handshake.
     wire [95:0] c2h_slice_tuser_in  = {s_axis_c2h_tuser_ptp_ts, s_axis_c2h_tuser_size};
     wire [95:0] c2h_slice_tuser_out;
 
@@ -330,9 +399,8 @@ module qdma_subsystem_function #(
       .m_axis_tuser   (axis_c2h_tuser_size)
     );
 
-    // For the clock converter path, the timestamp is stable across the
-    // entire packet so latching it on the post-converter beat is safe.
-    // Re-latch on every valid beat so it is current at tlast.
+    // PTP stable within a packet; latch on every valid beat so it's current
+    // at output tlast.
     reg [79:0] ptp_ts_cc_latched;
     always @(posedge axis_aclk) begin
       if (~axil_aresetn)
@@ -359,23 +427,73 @@ module qdma_subsystem_function #(
     .aresetn           (axil_aresetn)
   );
 
-  // Using the computed hash, look up a virtual queue ID in the RSS indirection
-  // table, which is then converted into a physical queue ID.  The physical
-  // queue ID is written into a FIFO and realigned to the first beat of the
-  // output stream.
+  // Queue ID computation — two paths selected by EXT_QID parameter:
+  //
+  //   EXT_QID=0 (default, legacy RSS):
+  //     Compute Toeplitz hash over packet headers, look up a virtual queue
+  //     ID in the RSS indirection table, add q_base to get absolute qid.
+  //     FIFO write triggered by hash_result_valid (once per packet).
+  //
+  //   EXT_QID=1 (Path γ external qid):
+  //     Absolute qid is supplied upstream via s_axis_c2h_tuser_qid — the
+  //     plugin encodes CMAC identity into qid before the stream reaches
+  //     this module.  Capture qid on the PRE-slice tlast handshake (the
+  //     producer holds tuser_qid stable for the packet, so at tlast time
+  //     the value is still the packet's qid).  The FIFO preserves packet
+  //     order; the output side reads on POST-slice tlast.  Keeping the
+  //     capture pre-slice means the main c2h slice's TUSER can stay narrow,
+  //     which relieves significant 250 MHz-domain congestion around the
+  //     QDMA PCIe IP.
+  //
+  // Either way the FIFO is realigned to the first beat of the output stream
+  // by the consumer (qid_fifo_rd_en).
+
+  // Track whether we're inside an input packet so we can detect first beats.
+  reg s_c2h_in_pkt;
   always @(posedge axis_aclk) begin
-    if (~axil_aresetn) begin
-      qid_fifo_wr_en <= 1'b0;
-      qid_fifo_din   <= 0;
-    end
-    else if (hash_result_valid) begin
-      qid_fifo_wr_en <= 1'b1;
-      qid_fifo_din   <= indir_table[`getvec(16, hash_result[6:0])] + q_base;
-    end
-    else begin
-      qid_fifo_wr_en <= 1'b0;
+    if (~axil_aresetn) s_c2h_in_pkt <= 1'b0;
+    else if (s_axis_c2h_tvalid && s_axis_c2h_tready) begin
+      if (s_axis_c2h_tlast) s_c2h_in_pkt <= 1'b0;
+      else                   s_c2h_in_pkt <= 1'b1;
     end
   end
+  wire s_c2h_first_beat = s_axis_c2h_tvalid && s_axis_c2h_tready && ~s_c2h_in_pkt;
+
+  generate if (EXT_QID == 1) begin : gen_ext_qid
+    always @(posedge axis_aclk) begin
+      if (~axil_aresetn) begin
+        qid_fifo_wr_en <= 1'b0;
+        qid_fifo_din   <= 11'd0;
+      end
+      // Write on the PRE-slice FIRST BEAT of each packet so the FIFO is
+      // populated by the time the slice emits that packet's first output
+      // beat.  Writing on tlast would leave the first packet's output
+      // beats 1..N-1 reading an empty FIFO (dout=0, wrong qid).
+      else if (s_c2h_first_beat) begin
+        qid_fifo_wr_en <= 1'b1;
+        qid_fifo_din   <= s_axis_c2h_tuser_qid;
+      end
+      else begin
+        qid_fifo_wr_en <= 1'b0;
+      end
+    end
+  end
+  else begin : gen_rss_qid
+    always @(posedge axis_aclk) begin
+      if (~axil_aresetn) begin
+        qid_fifo_wr_en <= 1'b0;
+        qid_fifo_din   <= 0;
+      end
+      else if (hash_result_valid) begin
+        qid_fifo_wr_en <= 1'b1;
+        qid_fifo_din   <= indir_table[`getvec(16, hash_result[6:0])] + q_base;
+      end
+      else begin
+        qid_fifo_wr_en <= 1'b0;
+      end
+    end
+  end
+  endgenerate
 
   assign qid_fifo_rd_en = m_axis_c2h_tvalid && m_axis_c2h_tlast && m_axis_c2h_tready;
 
