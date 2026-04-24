@@ -1272,6 +1272,48 @@ module open_nic_shell #(
   wire     [NUM_QDMA-1:0] qdma_s_axib_rlast;
   wire  [64*NUM_QDMA-1:0] qdma_s_axib_ruser;
 
+  // Route X — per-QDMA m_axi_* DMA master outputs (flattened, getvec-indexed).
+  // QDMA[0] m_axi_* consumed at axi_interconnect_to_dev_mem_inst; QDMA[1..N-1]
+  // outputs dangle (NUM_QDMA=1 in v4; dual-QDMA would need master-side arbitration).
+  wire   [4*NUM_QDMA-1:0] qdma_m_axi_awid;
+  wire  [64*NUM_QDMA-1:0] qdma_m_axi_awaddr;
+  wire  [32*NUM_QDMA-1:0] qdma_m_axi_awuser;
+  wire   [8*NUM_QDMA-1:0] qdma_m_axi_awlen;
+  wire   [3*NUM_QDMA-1:0] qdma_m_axi_awsize;
+  wire   [2*NUM_QDMA-1:0] qdma_m_axi_awburst;
+  wire   [3*NUM_QDMA-1:0] qdma_m_axi_awprot;
+  wire     [NUM_QDMA-1:0] qdma_m_axi_awvalid;
+  wire     [NUM_QDMA-1:0] qdma_m_axi_awready;
+  wire     [NUM_QDMA-1:0] qdma_m_axi_awlock;
+  wire   [4*NUM_QDMA-1:0] qdma_m_axi_awcache;
+  wire [512*NUM_QDMA-1:0] qdma_m_axi_wdata;
+  wire  [64*NUM_QDMA-1:0] qdma_m_axi_wuser;
+  wire  [64*NUM_QDMA-1:0] qdma_m_axi_wstrb;
+  wire     [NUM_QDMA-1:0] qdma_m_axi_wlast;
+  wire     [NUM_QDMA-1:0] qdma_m_axi_wvalid;
+  wire     [NUM_QDMA-1:0] qdma_m_axi_wready;
+  wire   [4*NUM_QDMA-1:0] qdma_m_axi_bid;
+  wire   [2*NUM_QDMA-1:0] qdma_m_axi_bresp;
+  wire     [NUM_QDMA-1:0] qdma_m_axi_bvalid;
+  wire     [NUM_QDMA-1:0] qdma_m_axi_bready;
+  wire   [4*NUM_QDMA-1:0] qdma_m_axi_arid;
+  wire  [64*NUM_QDMA-1:0] qdma_m_axi_araddr;
+  wire  [32*NUM_QDMA-1:0] qdma_m_axi_aruser;
+  wire   [8*NUM_QDMA-1:0] qdma_m_axi_arlen;
+  wire   [3*NUM_QDMA-1:0] qdma_m_axi_arsize;
+  wire   [2*NUM_QDMA-1:0] qdma_m_axi_arburst;
+  wire   [3*NUM_QDMA-1:0] qdma_m_axi_arprot;
+  wire     [NUM_QDMA-1:0] qdma_m_axi_arvalid;
+  wire     [NUM_QDMA-1:0] qdma_m_axi_arready;
+  wire     [NUM_QDMA-1:0] qdma_m_axi_arlock;
+  wire   [4*NUM_QDMA-1:0] qdma_m_axi_arcache;
+  wire   [4*NUM_QDMA-1:0] qdma_m_axi_rid;
+  wire [512*NUM_QDMA-1:0] qdma_m_axi_rdata;
+  wire   [2*NUM_QDMA-1:0] qdma_m_axi_rresp;
+  wire     [NUM_QDMA-1:0] qdma_m_axi_rlast;
+  wire     [NUM_QDMA-1:0] qdma_m_axi_rvalid;
+  wire     [NUM_QDMA-1:0] qdma_m_axi_rready;
+
   // Tier 3 → DDR4 output (7-bit ID, 34-bit addr)
   wire   [6:0] axi_ddr4_awid;
   wire  [33:0] axi_ddr4_awaddr;
@@ -1886,6 +1928,45 @@ module open_nic_shell #(
       .s_axil_csr_rdata                     (qdma_s_axil_csr_rdata[`getvec(32, i)]),
       .s_axil_csr_rresp                     (qdma_s_axil_csr_rresp[`getvec(2, i)]),
       .s_axil_csr_rready                    ((i == 0) ? axil_qdma_csr_rready     : 1'b1),
+
+      .m_axi_awid                           (qdma_m_axi_awid   [`getvec(4,   i)]),
+      .m_axi_awaddr                         (qdma_m_axi_awaddr [`getvec(64,  i)]),
+      .m_axi_awuser                         (qdma_m_axi_awuser [`getvec(32,  i)]),
+      .m_axi_awlen                          (qdma_m_axi_awlen  [`getvec(8,   i)]),
+      .m_axi_awsize                         (qdma_m_axi_awsize [`getvec(3,   i)]),
+      .m_axi_awburst                        (qdma_m_axi_awburst[`getvec(2,   i)]),
+      .m_axi_awprot                         (qdma_m_axi_awprot [`getvec(3,   i)]),
+      .m_axi_awvalid                        (qdma_m_axi_awvalid[i]),
+      .m_axi_awready                        (qdma_m_axi_awready[i]),
+      .m_axi_awlock                         (qdma_m_axi_awlock [i]),
+      .m_axi_awcache                        (qdma_m_axi_awcache[`getvec(4,   i)]),
+      .m_axi_wdata                          (qdma_m_axi_wdata  [`getvec(512, i)]),
+      .m_axi_wuser                          (qdma_m_axi_wuser  [`getvec(64,  i)]),
+      .m_axi_wstrb                          (qdma_m_axi_wstrb  [`getvec(64,  i)]),
+      .m_axi_wlast                          (qdma_m_axi_wlast  [i]),
+      .m_axi_wvalid                         (qdma_m_axi_wvalid [i]),
+      .m_axi_wready                         (qdma_m_axi_wready [i]),
+      .m_axi_bid                            (qdma_m_axi_bid    [`getvec(4,   i)]),
+      .m_axi_bresp                          (qdma_m_axi_bresp  [`getvec(2,   i)]),
+      .m_axi_bvalid                         (qdma_m_axi_bvalid [i]),
+      .m_axi_bready                         (qdma_m_axi_bready [i]),
+      .m_axi_arid                           (qdma_m_axi_arid   [`getvec(4,   i)]),
+      .m_axi_araddr                         (qdma_m_axi_araddr [`getvec(64,  i)]),
+      .m_axi_aruser                         (qdma_m_axi_aruser [`getvec(32,  i)]),
+      .m_axi_arlen                          (qdma_m_axi_arlen  [`getvec(8,   i)]),
+      .m_axi_arsize                         (qdma_m_axi_arsize [`getvec(3,   i)]),
+      .m_axi_arburst                        (qdma_m_axi_arburst[`getvec(2,   i)]),
+      .m_axi_arprot                         (qdma_m_axi_arprot [`getvec(3,   i)]),
+      .m_axi_arvalid                        (qdma_m_axi_arvalid[i]),
+      .m_axi_arready                        (qdma_m_axi_arready[i]),
+      .m_axi_arlock                         (qdma_m_axi_arlock [i]),
+      .m_axi_arcache                        (qdma_m_axi_arcache[`getvec(4,   i)]),
+      .m_axi_rid                            (qdma_m_axi_rid    [`getvec(4,   i)]),
+      .m_axi_rdata                          (qdma_m_axi_rdata  [`getvec(512, i)]),
+      .m_axi_rresp                          (qdma_m_axi_rresp  [`getvec(2,   i)]),
+      .m_axi_rlast                          (qdma_m_axi_rlast  [i]),
+      .m_axi_rvalid                         (qdma_m_axi_rvalid [i]),
+      .m_axi_rready                         (qdma_m_axi_rready [i]),
   `else // !`ifdef __synthesis__
       .s_axis_qdma_h2c_tvalid               (s_axis_qdma_h2c_sim_tvalid[i]),
       .s_axis_qdma_h2c_tdata                (s_axis_qdma_h2c_sim_tdata[`getvec(512, i)]),
@@ -3420,20 +3501,48 @@ module open_nic_shell #(
   // -----------------------------------------------------------------------
   // Tier 3 — 4:1 AXI crossbar to DDR4 (with clock converter)
   // -----------------------------------------------------------------------
+  // Route X — QDMA[0] m_axi_* drives the dev_mem crossbar's QDMA-MM slave.
+  // awid/arid zero-extended from QDMA's 4 bits to the crossbar's 5-bit ID.
+  // awqos/arqos tied to 0 (QDMA m_axi has no qos; crossbar slave requires it).
+  // awuser/aruser/wuser not forwarded (not ports on the crossbar).
   axi_interconnect_to_dev_mem axi_interconnect_to_dev_mem_inst (
-    .s_axi_qdma_mm_awid({1'd0, 4'd0}),.s_axi_qdma_mm_awaddr(64'd0),.s_axi_qdma_mm_awqos(4'd0),
-    .s_axi_qdma_mm_awlen(8'd0),.s_axi_qdma_mm_awsize(3'd0),.s_axi_qdma_mm_awburst(2'd0),
-    .s_axi_qdma_mm_awcache(4'd0),.s_axi_qdma_mm_awprot(3'd0),.s_axi_qdma_mm_awvalid(1'b0),
-    .s_axi_qdma_mm_awready(),.s_axi_qdma_mm_wdata(512'd0),.s_axi_qdma_mm_wstrb(64'd0),
-    .s_axi_qdma_mm_wlast(1'b0),.s_axi_qdma_mm_wvalid(1'b0),.s_axi_qdma_mm_wready(),
-    .s_axi_qdma_mm_awlock(1'b0),.s_axi_qdma_mm_bid(),.s_axi_qdma_mm_bresp(),
-    .s_axi_qdma_mm_bvalid(),.s_axi_qdma_mm_bready(1'b1),
-    .s_axi_qdma_mm_arid({1'd0, 4'd0}),.s_axi_qdma_mm_araddr(64'd0),.s_axi_qdma_mm_arlen(8'd0),
-    .s_axi_qdma_mm_arsize(3'd0),.s_axi_qdma_mm_arburst(2'd0),.s_axi_qdma_mm_arcache(4'd0),
-    .s_axi_qdma_mm_arprot(3'd0),.s_axi_qdma_mm_arvalid(1'b0),.s_axi_qdma_mm_arready(),
-    .s_axi_qdma_mm_rid(),.s_axi_qdma_mm_rdata(),.s_axi_qdma_mm_rresp(),
-    .s_axi_qdma_mm_rlast(),.s_axi_qdma_mm_rvalid(),.s_axi_qdma_mm_rready(1'b1),
-    .s_axi_qdma_mm_arlock(1'b0),.s_axi_qdma_mm_arqos(4'd0),
+    .s_axi_qdma_mm_awid    ({1'd0, qdma_m_axi_awid   [`getvec(4,   0)]}),
+    .s_axi_qdma_mm_awaddr  (       qdma_m_axi_awaddr [`getvec(64,  0)]),
+    .s_axi_qdma_mm_awqos   (4'd0),
+    .s_axi_qdma_mm_awlen   (       qdma_m_axi_awlen  [`getvec(8,   0)]),
+    .s_axi_qdma_mm_awsize  (       qdma_m_axi_awsize [`getvec(3,   0)]),
+    .s_axi_qdma_mm_awburst (       qdma_m_axi_awburst[`getvec(2,   0)]),
+    .s_axi_qdma_mm_awcache (       qdma_m_axi_awcache[`getvec(4,   0)]),
+    .s_axi_qdma_mm_awprot  (       qdma_m_axi_awprot [`getvec(3,   0)]),
+    .s_axi_qdma_mm_awvalid (       qdma_m_axi_awvalid[0]),
+    .s_axi_qdma_mm_awready (       qdma_m_axi_awready[0]),
+    .s_axi_qdma_mm_wdata   (       qdma_m_axi_wdata  [`getvec(512, 0)]),
+    .s_axi_qdma_mm_wstrb   (       qdma_m_axi_wstrb  [`getvec(64,  0)]),
+    .s_axi_qdma_mm_wlast   (       qdma_m_axi_wlast  [0]),
+    .s_axi_qdma_mm_wvalid  (       qdma_m_axi_wvalid [0]),
+    .s_axi_qdma_mm_wready  (       qdma_m_axi_wready [0]),
+    .s_axi_qdma_mm_awlock  (       qdma_m_axi_awlock [0]),
+    .s_axi_qdma_mm_bid     (       qdma_m_axi_bid    [`getvec(4,   0)]),
+    .s_axi_qdma_mm_bresp   (       qdma_m_axi_bresp  [`getvec(2,   0)]),
+    .s_axi_qdma_mm_bvalid  (       qdma_m_axi_bvalid [0]),
+    .s_axi_qdma_mm_bready  (       qdma_m_axi_bready [0]),
+    .s_axi_qdma_mm_arid    ({1'd0, qdma_m_axi_arid   [`getvec(4,   0)]}),
+    .s_axi_qdma_mm_araddr  (       qdma_m_axi_araddr [`getvec(64,  0)]),
+    .s_axi_qdma_mm_arlen   (       qdma_m_axi_arlen  [`getvec(8,   0)]),
+    .s_axi_qdma_mm_arsize  (       qdma_m_axi_arsize [`getvec(3,   0)]),
+    .s_axi_qdma_mm_arburst (       qdma_m_axi_arburst[`getvec(2,   0)]),
+    .s_axi_qdma_mm_arcache (       qdma_m_axi_arcache[`getvec(4,   0)]),
+    .s_axi_qdma_mm_arprot  (       qdma_m_axi_arprot [`getvec(3,   0)]),
+    .s_axi_qdma_mm_arvalid (       qdma_m_axi_arvalid[0]),
+    .s_axi_qdma_mm_arready (       qdma_m_axi_arready[0]),
+    .s_axi_qdma_mm_rid     (       qdma_m_axi_rid    [`getvec(4,   0)]),
+    .s_axi_qdma_mm_rdata   (       qdma_m_axi_rdata  [`getvec(512, 0)]),
+    .s_axi_qdma_mm_rresp   (       qdma_m_axi_rresp  [`getvec(2,   0)]),
+    .s_axi_qdma_mm_rlast   (       qdma_m_axi_rlast  [0]),
+    .s_axi_qdma_mm_rvalid  (       qdma_m_axi_rvalid [0]),
+    .s_axi_qdma_mm_rready  (       qdma_m_axi_rready [0]),
+    .s_axi_qdma_mm_arlock  (       qdma_m_axi_arlock [0]),
+    .s_axi_qdma_mm_arqos   (4'd0),
 
     .s_axi_compute_logic_awid(axi_compute_logic_awid),.s_axi_compute_logic_awaddr(axi_compute_logic_awaddr),
     .s_axi_compute_logic_awqos(axi_compute_logic_awqos),.s_axi_compute_logic_awlen(axi_compute_logic_awlen),
