@@ -19,6 +19,7 @@ set ips {
     qdma_no_sriov
     qdma_subsystem_clk_div
     qdma_subsystem_axi_cdc
+    qdma_subsystem_axi_csr_cdc
     qdma_subsystem_axi_crossbar
     qdma_subsystem_c2h_ecc
 }

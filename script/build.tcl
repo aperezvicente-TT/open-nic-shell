@@ -303,7 +303,16 @@ dict for {module module_dir} $module_dict {
         }
         if {$cached} {
             puts "INFO: \[$ip\] Found existing IP build, deleting... (overwrite=1)"
+            if {![string equal [get_ips -quiet $ip] ""]} {
+                export_ip_user_files -of_objects [get_files ${ip_build_dir}/${ip}/${ip}.xci] -no_script -reset -force -quiet
+                remove_files -quiet [get_files ${ip_build_dir}/${ip}/${ip}.xci]
+            }
             file delete -force ${ip_build_dir}/${ip}
+        } elseif {![string equal [get_ips -quiet $ip] ""]} {
+            # IP is registered in the project but its directory was externally
+            # removed (e.g. single-IP manual delete); deregister so create_ip works.
+            export_ip_user_files -of_objects [get_files -quiet ${ip_build_dir}/${ip}/${ip}.xci] -no_script -reset -force -quiet
+            remove_files -quiet [get_files -quiet ${ip_build_dir}/${ip}/${ip}.xci]
         }
 
         # Rule for IP scripts
@@ -324,6 +333,26 @@ dict for {module module_dir} $module_dict {
         # Run out-of-context IP synthesis
         if {$synth_ip} {
             create_ip_run [get_ips $ip]
+            # Workaround: Vivado 2024.2 heap corruption (AR#1234567) in
+            # Optimize2::timingOpt / ConstProp::cleanup for ERNIC IP —
+            # disable timing-driven synth to avoid the crashing code path.
+            if {[string match "rdma_core*" $ip]} {
+                # Vivado 2024.2 bug: heap corruption in Optimize2::timingOpt /
+                # ConstProp::cleanup for ERNIC.  IP OOC runs do not expose
+                # STEPS.SYNTH_DESIGN.ARGS.MORE_OPTIONS, so patch the generated
+                # run script directly to add -no_timing_driven.
+                set _run_tcl [file join ${ip_build_dir} manage_ip \
+                    manage_ip.runs ${ip}_synth_1 ${ip}.tcl]
+                if {[file exists $_run_tcl]} {
+                    set _fd [open $_run_tcl r]; set _src [read $_fd]; close $_fd
+                    regsub {synth_design -top} $_src \
+                        {synth_design -no_timing_driven -top} _src
+                    set _fd [open $_run_tcl w]; puts -nonewline $_fd $_src; close $_fd
+                    puts "INFO: \[$ip\] Patched run script with -no_timing_driven"
+                } else {
+                    puts "WARNING: \[$ip\] Run script not found; -no_timing_driven not applied"
+                }
+            }
             launch_runs ${ip}_synth_1
             wait_on_run ${ip}_synth_1
         }

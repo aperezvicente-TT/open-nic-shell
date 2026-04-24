@@ -213,10 +213,16 @@ module packet_filter (
   end
 
   // RDMA output assignments
-  assign m_axis_rdma_tvalid = rdma_fifo_rd_en;
-  assign m_axis_rdma_tdata  = rdma_fifo_rd_en ? rdma_fifo_out_tdata : {AXIS_DATA_WIDTH{1'b0}};
-  assign m_axis_rdma_tkeep  = rdma_fifo_rd_en ? rdma_fifo_out_tkeep : {AXIS_KEEP_WIDTH{1'b0}};
-  assign m_axis_rdma_tlast  = rdma_fifo_rd_en ? rdma_fifo_out_tlast : 1'b0;
+  // AXIS compliance: tvalid must NOT depend combinationally on tready.
+  // FWFT FIFO exposes stable data at its output whenever !empty, so tvalid
+  // = !empty is correct.  Previously `tvalid = rdma_fifo_rd_en` coupled
+  // tvalid to tready (via rd_en's gating on tready), creating a
+  // combinational loop when the downstream arbiter also derives tready
+  // from tvalid (Path γ plugin arbiter).
+  assign m_axis_rdma_tvalid = !rdma_fifo_empty;
+  assign m_axis_rdma_tdata  = !rdma_fifo_empty ? rdma_fifo_out_tdata : {AXIS_DATA_WIDTH{1'b0}};
+  assign m_axis_rdma_tkeep  = !rdma_fifo_empty ? rdma_fifo_out_tkeep : {AXIS_KEEP_WIDTH{1'b0}};
+  assign m_axis_rdma_tlast  = !rdma_fifo_empty ? rdma_fifo_out_tlast : 1'b0;
 
   // =========================================================================
   // Read-side FSM: Non-RDMA (host) output
@@ -258,11 +264,14 @@ module packet_filter (
     end
   end
 
-  // Host output assignments
-  assign m_axis_host_tvalid = host_fifo_rd_en;
-  assign m_axis_host_tdata  = host_fifo_rd_en ? host_fifo_out_tdata : {AXIS_DATA_WIDTH{1'b0}};
-  assign m_axis_host_tkeep  = host_fifo_rd_en ? host_fifo_out_tkeep : {AXIS_KEEP_WIDTH{1'b0}};
-  assign m_axis_host_tlast  = host_fifo_rd_en ? host_fifo_out_tlast : 1'b0;
+  // Host output assignments.
+  // AXIS compliance: tvalid = !empty (purely a FIFO state), independent of
+  // tready.  See rdma path comment above for the combinational-loop
+  // rationale this fixes.
+  assign m_axis_host_tvalid = !host_fifo_empty;
+  assign m_axis_host_tdata  = !host_fifo_empty ? host_fifo_out_tdata : {AXIS_DATA_WIDTH{1'b0}};
+  assign m_axis_host_tkeep  = !host_fifo_empty ? host_fifo_out_tkeep : {AXIS_KEEP_WIDTH{1'b0}};
+  assign m_axis_host_tlast  = !host_fifo_empty ? host_fifo_out_tlast : 1'b0;
 
   // =========================================================================
   // RDMA packet FIFO (xpm_fifo_sync)

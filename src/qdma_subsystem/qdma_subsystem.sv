@@ -23,6 +23,9 @@ module qdma_subsystem #(
   parameter int MAX_PKT_LEN   = 1518,
   parameter int USE_PHYS_FUNC = 1,
   parameter int NUM_PHYS_FUNC = 1,
+  // When EXT_QID=1, C2H qid comes from s_axis_c2h_tuser_qid upstream (plugin
+  // tags absolute qid per-CMAC).  Default 0 preserves legacy internal RSS.
+  parameter int EXT_QID       = 0,
   parameter int NUM_QUEUE     = 512
 ) (
   input                          s_axil_awvalid,
@@ -50,6 +53,9 @@ module qdma_subsystem #(
   output  [16*NUM_PHYS_FUNC-1:0] m_axis_h2c_tuser_src,
   output  [16*NUM_PHYS_FUNC-1:0] m_axis_h2c_tuser_dst,
   output  [16*NUM_PHYS_FUNC-1:0] m_axis_h2c_tuser_ptp_tag,
+  // Absolute qid forwarded with each H2C packet so the plugin can demux
+  // normal-ethernet traffic to the correct CMAC TX path (Path γ).
+  output  [11*NUM_PHYS_FUNC-1:0] m_axis_h2c_tuser_qid,
   input      [NUM_PHYS_FUNC-1:0] m_axis_h2c_tready,
 
   input      [NUM_PHYS_FUNC-1:0] s_axis_c2h_tvalid,
@@ -60,6 +66,7 @@ module qdma_subsystem #(
   input   [16*NUM_PHYS_FUNC-1:0] s_axis_c2h_tuser_src,
   input   [16*NUM_PHYS_FUNC-1:0] s_axis_c2h_tuser_dst,
   input   [80*NUM_PHYS_FUNC-1:0] s_axis_c2h_tuser_ptp_ts,
+  input   [11*NUM_PHYS_FUNC-1:0] s_axis_c2h_tuser_qid,   // EXT_QID=1 only
   output     [NUM_PHYS_FUNC-1:0] s_axis_c2h_tready,
 
 `ifdef __synthesis__
@@ -137,6 +144,69 @@ module qdma_subsystem #(
   output                         s_axib_rvalid,
   input                          s_axib_rready,
   output                  [63:0] s_axib_ruser,
+
+  // AXI-Lite CSR slave (125 MHz, kernel-programmable QDMA DMA window table)
+  output                         s_csr_prog_done,
+  input                   [31:0] s_axil_csr_awaddr,
+  input                    [2:0] s_axil_csr_awprot,
+  input                          s_axil_csr_awvalid,
+  output                         s_axil_csr_awready,
+  input                   [31:0] s_axil_csr_wdata,
+  input                    [3:0] s_axil_csr_wstrb,
+  input                          s_axil_csr_wvalid,
+  output                         s_axil_csr_wready,
+  output                         s_axil_csr_bvalid,
+  output                   [1:0] s_axil_csr_bresp,
+  input                          s_axil_csr_bready,
+  input                   [31:0] s_axil_csr_araddr,
+  input                    [2:0] s_axil_csr_arprot,
+  input                          s_axil_csr_arvalid,
+  output                         s_axil_csr_arready,
+  output                  [31:0] s_axil_csr_rdata,
+  output                   [1:0] s_axil_csr_rresp,
+  output                         s_axil_csr_rvalid,
+  input                          s_axil_csr_rready,
+
+  // Route X — QDMA AXI-MM master (DMA engine output), passed through to the
+  // wrapper and out to axi_interconnect_to_dev_mem on open_nic_shell.sv.
+  output                   [3:0] m_axi_awid,
+  output                  [63:0] m_axi_awaddr,
+  output                  [31:0] m_axi_awuser,
+  output                   [7:0] m_axi_awlen,
+  output                   [2:0] m_axi_awsize,
+  output                   [1:0] m_axi_awburst,
+  output                   [2:0] m_axi_awprot,
+  output                         m_axi_awvalid,
+  input                          m_axi_awready,
+  output                         m_axi_awlock,
+  output                   [3:0] m_axi_awcache,
+  output                 [511:0] m_axi_wdata,
+  output                  [63:0] m_axi_wuser,
+  output                  [63:0] m_axi_wstrb,
+  output                         m_axi_wlast,
+  output                         m_axi_wvalid,
+  input                          m_axi_wready,
+  input                    [3:0] m_axi_bid,
+  input                    [1:0] m_axi_bresp,
+  input                          m_axi_bvalid,
+  output                         m_axi_bready,
+  output                   [3:0] m_axi_arid,
+  output                  [63:0] m_axi_araddr,
+  output                  [31:0] m_axi_aruser,
+  output                   [7:0] m_axi_arlen,
+  output                   [2:0] m_axi_arsize,
+  output                   [1:0] m_axi_arburst,
+  output                   [2:0] m_axi_arprot,
+  output                         m_axi_arvalid,
+  input                          m_axi_arready,
+  output                         m_axi_arlock,
+  output                   [3:0] m_axi_arcache,
+  input                    [3:0] m_axi_rid,
+  input                  [511:0] m_axi_rdata,
+  input                    [1:0] m_axi_rresp,
+  input                          m_axi_rlast,
+  input                          m_axi_rvalid,
+  output                         m_axi_rready,
 `else // !`ifdef __synthesis__
   input                          s_axis_qdma_h2c_tvalid,
   input                  [511:0] s_axis_qdma_h2c_tdata,
@@ -530,7 +600,66 @@ module qdma_subsystem #(
     .s_axib_rlast                    (s_axib_rlast),
     .s_axib_rvalid                   (s_axib_rvalid),
     .s_axib_rready                   (s_axib_rready),
-    .s_axib_ruser                    (s_axib_ruser)
+    .s_axib_ruser                    (s_axib_ruser),
+    .s_csr_prog_done                 (s_csr_prog_done),
+    .s_axil_csr_awaddr               (s_axil_csr_awaddr),
+    .s_axil_csr_awprot               (s_axil_csr_awprot),
+    .s_axil_csr_awvalid              (s_axil_csr_awvalid),
+    .s_axil_csr_awready              (s_axil_csr_awready),
+    .s_axil_csr_wdata                (s_axil_csr_wdata),
+    .s_axil_csr_wstrb                (s_axil_csr_wstrb),
+    .s_axil_csr_wvalid               (s_axil_csr_wvalid),
+    .s_axil_csr_wready               (s_axil_csr_wready),
+    .s_axil_csr_bvalid               (s_axil_csr_bvalid),
+    .s_axil_csr_bresp                (s_axil_csr_bresp),
+    .s_axil_csr_bready               (s_axil_csr_bready),
+    .s_axil_csr_araddr               (s_axil_csr_araddr),
+    .s_axil_csr_arprot               (s_axil_csr_arprot),
+    .s_axil_csr_arvalid              (s_axil_csr_arvalid),
+    .s_axil_csr_arready              (s_axil_csr_arready),
+    .s_axil_csr_rdata                (s_axil_csr_rdata),
+    .s_axil_csr_rresp                (s_axil_csr_rresp),
+    .s_axil_csr_rvalid               (s_axil_csr_rvalid),
+    .s_axil_csr_rready               (s_axil_csr_rready),
+
+    .m_axi_awid                      (m_axi_awid),
+    .m_axi_awaddr                    (m_axi_awaddr),
+    .m_axi_awuser                    (m_axi_awuser),
+    .m_axi_awlen                     (m_axi_awlen),
+    .m_axi_awsize                    (m_axi_awsize),
+    .m_axi_awburst                   (m_axi_awburst),
+    .m_axi_awprot                    (m_axi_awprot),
+    .m_axi_awvalid                   (m_axi_awvalid),
+    .m_axi_awready                   (m_axi_awready),
+    .m_axi_awlock                    (m_axi_awlock),
+    .m_axi_awcache                   (m_axi_awcache),
+    .m_axi_wdata                     (m_axi_wdata),
+    .m_axi_wuser                     (m_axi_wuser),
+    .m_axi_wstrb                     (m_axi_wstrb),
+    .m_axi_wlast                     (m_axi_wlast),
+    .m_axi_wvalid                    (m_axi_wvalid),
+    .m_axi_wready                    (m_axi_wready),
+    .m_axi_bid                       (m_axi_bid),
+    .m_axi_bresp                     (m_axi_bresp),
+    .m_axi_bvalid                    (m_axi_bvalid),
+    .m_axi_bready                    (m_axi_bready),
+    .m_axi_arid                      (m_axi_arid),
+    .m_axi_araddr                    (m_axi_araddr),
+    .m_axi_aruser                    (m_axi_aruser),
+    .m_axi_arlen                     (m_axi_arlen),
+    .m_axi_arsize                    (m_axi_arsize),
+    .m_axi_arburst                   (m_axi_arburst),
+    .m_axi_arprot                    (m_axi_arprot),
+    .m_axi_arvalid                   (m_axi_arvalid),
+    .m_axi_arready                   (m_axi_arready),
+    .m_axi_arlock                    (m_axi_arlock),
+    .m_axi_arcache                   (m_axi_arcache),
+    .m_axi_rid                       (m_axi_rid),
+    .m_axi_rdata                     (m_axi_rdata),
+    .m_axi_rresp                     (m_axi_rresp),
+    .m_axi_rlast                     (m_axi_rlast),
+    .m_axi_rvalid                    (m_axi_rvalid),
+    .m_axi_rready                    (m_axi_rready)
   );
 `else // !`ifdef __synthesis__
   initial begin
@@ -685,6 +814,42 @@ module qdma_subsystem #(
     assign s_axib_rresp   = 2'd0;
     assign s_axib_rlast   = 1'b0;
     assign s_axib_ruser   = 64'd0;
+    assign s_csr_prog_done    = 1'b0;
+    assign s_axil_csr_awready = 1'b0;
+    assign s_axil_csr_wready  = 1'b0;
+    assign s_axil_csr_bvalid  = 1'b0;
+    assign s_axil_csr_bresp   = 2'b0;
+    assign s_axil_csr_arready = 1'b0;
+    assign s_axil_csr_rdata   = 32'b0;
+    assign s_axil_csr_rresp   = 2'b0;
+    assign s_axil_csr_rvalid  = 1'b0;
+    assign m_axi_awid    = 4'd0;
+    assign m_axi_awaddr  = 64'd0;
+    assign m_axi_awuser  = 32'd0;
+    assign m_axi_awlen   = 8'd0;
+    assign m_axi_awsize  = 3'd0;
+    assign m_axi_awburst = 2'd0;
+    assign m_axi_awprot  = 3'd0;
+    assign m_axi_awvalid = 1'b0;
+    assign m_axi_awlock  = 1'b0;
+    assign m_axi_awcache = 4'd0;
+    assign m_axi_wdata   = 512'd0;
+    assign m_axi_wuser   = 64'd0;
+    assign m_axi_wstrb   = 64'd0;
+    assign m_axi_wlast   = 1'b0;
+    assign m_axi_wvalid  = 1'b0;
+    assign m_axi_bready  = 1'b1;
+    assign m_axi_arid    = 4'd0;
+    assign m_axi_araddr  = 64'd0;
+    assign m_axi_aruser  = 32'd0;
+    assign m_axi_arlen   = 8'd0;
+    assign m_axi_arsize  = 3'd0;
+    assign m_axi_arburst = 2'd0;
+    assign m_axi_arprot  = 3'd0;
+    assign m_axi_arvalid = 1'b0;
+    assign m_axi_arlock  = 1'b0;
+    assign m_axi_arcache = 4'd0;
+    assign m_axi_rready  = 1'b1;
 `endif
   end
   else begin
@@ -910,7 +1075,8 @@ module qdma_subsystem #(
         .FUNC_ID     (i),
         .QDMA_ID     (QDMA_ID),
         .MAX_PKT_LEN (MAX_PKT_LEN),
-        .MIN_PKT_LEN (MIN_PKT_LEN)
+        .MIN_PKT_LEN (MIN_PKT_LEN),
+        .EXT_QID     (EXT_QID)
       ) func_inst (
         .s_axil_awvalid        (axil_func_awvalid[i]),
         .s_axil_awaddr         (axil_func_awaddr[`getvec(32, i)]),
@@ -945,6 +1111,7 @@ module qdma_subsystem #(
         .m_axis_h2c_tuser_src  (m_axis_h2c_tuser_src[`getvec(16, i)]),
         .m_axis_h2c_tuser_dst  (m_axis_h2c_tuser_dst[`getvec(16, i)]),
         .m_axis_h2c_tuser_ptp_tag (m_axis_h2c_tuser_ptp_tag[`getvec(16, i)]),
+        .m_axis_h2c_tuser_qid  (m_axis_h2c_tuser_qid[`getvec(11, i)]),
         .m_axis_h2c_tready     (m_axis_h2c_tready[i]),
 
         .s_axis_c2h_tvalid     (s_axis_c2h_tvalid[i]),
@@ -955,6 +1122,7 @@ module qdma_subsystem #(
         .s_axis_c2h_tuser_src  (s_axis_c2h_tuser_src[`getvec(16, i)]),
         .s_axis_c2h_tuser_dst  (s_axis_c2h_tuser_dst[`getvec(16, i)]),
         .s_axis_c2h_tuser_ptp_ts (s_axis_c2h_tuser_ptp_ts[`getvec(80, i)]),
+        .s_axis_c2h_tuser_qid  (s_axis_c2h_tuser_qid[`getvec(11, i)]),
         .s_axis_c2h_tready     (s_axis_c2h_tready[i]),
 
         .m_axis_c2h_tvalid     (axis_c2h_tvalid[i]),

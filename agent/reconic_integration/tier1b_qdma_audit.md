@@ -338,3 +338,96 @@ Only shared resource is the downstream host-DMA path (the mux above). A user can
 5. Synth-only build.
 6. Full rebuild → Phase 1 CSR regression (27/27, BAR2 16M preserved).
 7. Phase 2: ERNIC RDMA data flow through `s_axib` (driver + loopback test).
+
+---
+
+# Session 4 outcome — 2026-04-18
+
+## Status: graft committed (`c92420d`), full build FAILED in opt_design
+
+Synthesis completed (all port-matching errors from first run were due to stale QDMA IP cache; once the IP dir was deleted the regenerated IP matched the graft — 35/35 ports verified).
+
+**Implementation failed at opt_design**:
+
+```
+ERROR: [Opt 31-67] LUT2 cell missing I0 input connection.
+  Cell: qdma_if[0].qdma_subsystem_inst/qdma_wrapper_inst/qdma_inst/inst/rtl_wrapper_inst/
+        csr_module.i_mst_axilite_csr/axil_pgm_noc_badr_0_d1_i_9
+  Cause: Removal of unused logic caused a fanin path to an in-use LUT input to be trimmed.
+```
+
+The orphaned LUT is inside the **QDMA IP's bridge-slave CSR module**, specifically `axil_pgm_noc_badr_0` — the "program NoC base address register 0". This CSR is programmed at runtime via the `s_axil_csr_*` AXI-Lite interface.
+
+## Re-evaluation of Session 2 Q2
+
+Session 2 answered Q2 as "**Tie off / don't enable** the `s_axil_csr_*` interface — `axibar_highaddr_0` is programmed statically at IP-gen so we don't need it." That was based on a reading of PG302 p163.
+
+**This failure suggests Q2 was wrong.** The QDMA IP's bridge-slave module has a runtime-programmable NoC BAR register (`axil_pgm_noc_badr_0`) that:
+- Lives on the `s_axil_csr_*` path, and
+- Must have a valid driver (or proper tie-off signaling "no runtime programming needed") for opt_design to clean up unused logic without leaving orphan LUT inputs.
+
+With `s_axil_csr_*` left unconnected, synth correctly trimmed the CSR-to-register datapath, but opt_design's connectivity checker caught the resulting orphaned LUT.
+
+## Three candidate fixes (pick one next session)
+
+### Option A — Drive `s_axil_csr_*` from fabric (RecoNIC's approach)
+- ~18 AXI-Lite port additions + `qdma_subsystem_axi_csr_cdc` (125↔250 MHz CDC) + `xpm_cdc_single` for `s_csr_prog_done`.
+- Route through system_config AXI-Lite crossbar as a new master slice (or leave host-unreachable and driver-tied).
+- This is what Session 2 originally inventoried at ~92 ports.
+- Closest to validated RecoNIC pattern. Highest confidence but largest graft delta.
+
+### Option B — Inspect the regenerated `qdma_no_sriov.v` for `s_csr_prog_done` and tie strategically
+- The IP may expose a `s_csr_prog_done` signal indicating "host-side CSR programming complete / bypass CSR path".
+- If present, driving it to `1'b1` (done without programming) + tying `s_axil_csr_*awvalid/arvalid=0` may be enough.
+- Check `build/au200_2cmac_2pf_rdma_v2/vivado_ip/qdma_no_sriov/synth/qdma_no_sriov.sv` for the `s_axil_csr_*` / `s_csr_prog_done` port list.
+
+### Option C — Enable axibar_notranslate
+- Session 2 TCL has `axibar_notranslate {false}` (translation enabled, runtime CSR programs the table).
+- If we set `axibar_notranslate {true}`, the IP may skip the translation register entirely and use pure pass-through (host PCIe address == fabric address).
+- Simpler but loses the translation window capability. May not align with ERNIC's SQ/RQ buffer addressing.
+
+## Recommended Session 5 first move
+
+Run:
+```
+grep -E "s_axil_csr|s_csr_prog_done|pgm_noc" \
+  build/au200_2cmac_2pf_rdma_v2/vivado_ip/qdma_no_sriov/synth/qdma_no_sriov.sv
+```
+
+That will list the exact CSR-path ports the regenerated IP emits. Then decide between Options A/B/C based on what's available and how Vivado elaborates them.
+
+## Artifacts Session 4
+
+- Commit `c92420d`: graft + TCL revert (working on the synth side, blocked at opt).
+- Tier 1a preserved bitstream still at `build/_tier1a_preserved/open_nic_shell.bit`.
+- Stale QDMA IP dir + failed impl_1 in `build/au200_2cmac_2pf_rdma_v2/` (can delete or leave; next run will regenerate anyway).
+- `script/build_v2_full.log`: full log of the failed opt_design run.
+
+---
+
+# Session 5 addendum — 2026-04-18
+
+## Root cause identified and fix applied (TCL only, no RTL change)
+
+**Root cause** (deeper than Session 4 diagnosed): The opt_design error `[Opt 31-67]` was triggered by a driverless net **inside** the IP — `csr_module.i_mst_axilite_csr/s_axil_csr_araddr[4]`. When `s_axil_csr_araddr` is constant-tied to 0 at the IP port, Vivado constant-folds the address register write-enable path away, but the LUT consuming `araddr[4]` (`axil_pgm_noc_badr_0_d1_i_9`) survives trimming because its output is still load-bearing for the NoC BAR address register — leaving it with a driverless I0 input.
+
+**Fix**: `axibar_notranslate {true}` (working-tree edit to `qdma_no_sriov_au200.tcl`).
+
+- With `notranslate=false` (previous): IP instantiates a runtime-programmable BAR translation table (`axil_pgm_noc_badr_0`). Constant-tying `s_axil_csr_*` idle creates the orphaned LUT.
+- With `notranslate=true` (now): IP uses pass-through addressing — `s_axib_awaddr` forwarded directly to PCIe unchanged. No translation registers → no orphaned LUT.
+
+This is also **functionally correct** (not just a workaround): ERNIC writes host physical addresses directly into `s_axib_awaddr`. We need QDMA to forward those addresses verbatim to PCIe. A translation table with unprogrammed entries (reset=0) would have re-mapped ERNIC addresses to 0, breaking DMA. `notranslate=true` was the right setting all along.
+
+**What `s_axil_csr_*` idle tie-off means now**: With `notranslate=true`, the translation registers are absent. `s_axil_csr_*` may still be emitted as a port by the IP (for other CSR registers), but the critical `axil_pgm_noc_badr_0` path is gone. The idle tie-off (awvalid=0, arvalid=0) in both wrapper generate arms is retained — harmless if the port still exists, and the IP's remaining CSR registers (if any) will see no transactions.
+
+**Changes made this session**:
+1. `src/qdma_subsystem/vivado_ip/qdma_no_sriov_au200.tcl`: `axibar_notranslate {false}` → `{true}` (**not yet committed** — batch with build verification first)
+2. Deleted `build/au200_2cmac_2pf_rdma_v2/vivado_ip/qdma_no_sriov/` to force IP regeneration.
+
+## Session 5 next steps
+
+1. Run `script/build_2cmac_rdma_v2_ipgen.sh` to regenerate IP with `notranslate=true` and verify `axil_pgm_noc_badr_0` no longer appears in `synth/qdma_no_sriov.sv`.
+2. Run synth-only build — confirm opt_design passes.
+3. Commit TCL change: `build(qdma): fix opt_design orphaned LUT — axibar_notranslate=true`.
+4. Full rebuild → Phase 1 CSR regression (27/27, BAR2 16M preserved).
+5. Phase 2: ERNIC RDMA data flow through `s_axib` (driver + loopback test).

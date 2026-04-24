@@ -17,7 +17,7 @@
 // *************************************************************************
 // System address map (through PCI-e BAR2 4MB)
 //
-// Without __rdma_enabled__ (13 master ports):
+// Without __rdma_enabled__ (14 master ports):
 // --------------------------------------------------
 //   BaseAddr  |  HighAddr |  Module
 // --------------------------------------------------
@@ -35,7 +35,7 @@
 // --------------------------------------------------
 //    0x10000  |  0x11FFF  |  M06  Sysmon block
 // --------------------------------------------------
-//    0x12000  |  0x16FFF  |  M07  QDMA subsystem #1
+//    0x12000  |  0x13FFF  |  M07  QDMA subsystem #1
 // --------------------------------------------------
 //   0x200000  |  0x2FFFFF |  M08  Box1 @ 322MHz
 // --------------------------------------------------
@@ -47,8 +47,10 @@
 // --------------------------------------------------
 //    0x18000  |  0x1AFFF  |  M12  PTP subsystem
 // --------------------------------------------------
+//    0x14000  |  0x14FFF  |  M13  QDMA[0] CSR bridge (DMA window table)
+// --------------------------------------------------
 //
-// With __rdma_enabled__ (15 master ports):
+// With __rdma_enabled__ (16 master ports):
 // --------------------------------------------------
 //   BaseAddr  |  HighAddr |  Module
 // --------------------------------------------------
@@ -81,6 +83,8 @@
 //   0x800000  |  0x9FFFFF |  M13  ERNIC0 (CMAC0/QSFP0)  2 MB per PG332 v4.3 Tbl 9
 // --------------------------------------------------
 //   0xA00000  |  0xBFFFFF |  M14  ERNIC1 (CMAC1/QSFP1)  2 MB
+// --------------------------------------------------
+//    0x14000  |  0x14FFF  |  M15  QDMA[0] CSR bridge (DMA window table)
 // --------------------------------------------------
 
 `include "open_nic_shell_macros.vh"
@@ -282,6 +286,24 @@ module system_config_address_map #(
   input                   [1:0] m_axil_ptp_rresp,
   output                        m_axil_ptp_rready,
 
+  output                        m_axil_qdma_csr_awvalid,
+  output                 [31:0] m_axil_qdma_csr_awaddr,
+  input                         m_axil_qdma_csr_awready,
+  output                        m_axil_qdma_csr_wvalid,
+  output                 [31:0] m_axil_qdma_csr_wdata,
+  output                  [3:0] m_axil_qdma_csr_wstrb,
+  input                         m_axil_qdma_csr_wready,
+  input                         m_axil_qdma_csr_bvalid,
+  input                   [1:0] m_axil_qdma_csr_bresp,
+  output                        m_axil_qdma_csr_bready,
+  output                        m_axil_qdma_csr_arvalid,
+  output                 [31:0] m_axil_qdma_csr_araddr,
+  input                         m_axil_qdma_csr_arready,
+  input                         m_axil_qdma_csr_rvalid,
+  input                  [31:0] m_axil_qdma_csr_rdata,
+  input                   [1:0] m_axil_qdma_csr_rresp,
+  output                        m_axil_qdma_csr_rready,
+
 `ifdef __rdma_enabled__
   output                        m_axil_rdma_awvalid,
   output                 [31:0] m_axil_rdma_awaddr,
@@ -325,9 +347,9 @@ module system_config_address_map #(
 );
 
 `ifdef __rdma_enabled__
-  localparam C_NUM_SLAVES  = 15;
+  localparam C_NUM_SLAVES  = 16;
 `else
-  localparam C_NUM_SLAVES  = 13;
+  localparam C_NUM_SLAVES  = 14;
 `endif
 
   localparam C_SCFG_INDEX  = 0;
@@ -346,7 +368,11 @@ module system_config_address_map #(
 `ifdef __rdma_enabled__
   localparam C_RDMA0_INDEX = 13;
   localparam C_RDMA1_INDEX = 14;
+  localparam C_QCSR_INDEX  = 15;
+`else
+  localparam C_QCSR_INDEX  = 13;
 `endif
+  localparam C_QCSR_BASE_ADDR = 32'h14000;
 
   localparam C_SCFG_BASE_ADDR  = 32'h0;
   localparam C_QDMA0_BASE_ADDR = 32'h01000;
@@ -401,6 +427,8 @@ module system_config_address_map #(
   wire                [31:0] axil_rdma_1_awaddr;
   wire                [31:0] axil_rdma_1_araddr;
 `endif
+  wire                [31:0] axil_qdma_csr_awaddr;
+  wire                [31:0] axil_qdma_csr_araddr;
 
   wire        [NUM_QDMA-1:0] axil_pcie_awvalid;
   wire     [32*NUM_QDMA-1:0] axil_pcie_awaddr;
@@ -466,6 +494,8 @@ module system_config_address_map #(
   assign axil_qspi_araddr                      = axil_araddr[`getvec(32, C_QSPI_INDEX)] - C_QSPI_BASE_ADDR;
   assign axil_ptp_awaddr                       = axil_awaddr[`getvec(32, C_PTP_INDEX)] - C_PTP_BASE_ADDR;
   assign axil_ptp_araddr                       = axil_araddr[`getvec(32, C_PTP_INDEX)] - C_PTP_BASE_ADDR;
+  assign axil_qdma_csr_awaddr                  = axil_awaddr[`getvec(32, C_QCSR_INDEX)] - C_QCSR_BASE_ADDR;
+  assign axil_qdma_csr_araddr                  = axil_araddr[`getvec(32, C_QCSR_INDEX)] - C_QCSR_BASE_ADDR;
 `ifdef __rdma_enabled__
   assign axil_rdma_awaddr                      = axil_awaddr[`getvec(32, C_RDMA0_INDEX)] - C_RDMA0_BASE_ADDR;
   assign axil_rdma_araddr                      = axil_araddr[`getvec(32, C_RDMA0_INDEX)] - C_RDMA0_BASE_ADDR;
@@ -865,6 +895,24 @@ module system_config_address_map #(
   assign axil_rdata[`getvec(32, C_PTP_INDEX)]   = m_axil_ptp_rdata;
   assign axil_rresp[`getvec(2, C_PTP_INDEX)]    = m_axil_ptp_rresp;
   assign m_axil_ptp_rready                      = axil_rready[C_PTP_INDEX];
+
+  assign m_axil_qdma_csr_awvalid                = axil_awvalid[C_QCSR_INDEX];
+  assign m_axil_qdma_csr_awaddr                 = axil_qdma_csr_awaddr;
+  assign axil_awready[C_QCSR_INDEX]             = m_axil_qdma_csr_awready;
+  assign m_axil_qdma_csr_wvalid                 = axil_wvalid[C_QCSR_INDEX];
+  assign m_axil_qdma_csr_wdata                  = axil_wdata[`getvec(32, C_QCSR_INDEX)];
+  assign m_axil_qdma_csr_wstrb                  = axil_wstrb[`getvec(4, C_QCSR_INDEX)];
+  assign axil_wready[C_QCSR_INDEX]              = m_axil_qdma_csr_wready;
+  assign axil_bvalid[C_QCSR_INDEX]              = m_axil_qdma_csr_bvalid;
+  assign axil_bresp[`getvec(2, C_QCSR_INDEX)]   = m_axil_qdma_csr_bresp;
+  assign m_axil_qdma_csr_bready                 = axil_bready[C_QCSR_INDEX];
+  assign m_axil_qdma_csr_arvalid                = axil_arvalid[C_QCSR_INDEX];
+  assign m_axil_qdma_csr_araddr                 = axil_qdma_csr_araddr;
+  assign axil_arready[C_QCSR_INDEX]             = m_axil_qdma_csr_arready;
+  assign axil_rvalid[C_QCSR_INDEX]              = m_axil_qdma_csr_rvalid;
+  assign axil_rdata[`getvec(32, C_QCSR_INDEX)]  = m_axil_qdma_csr_rdata;
+  assign axil_rresp[`getvec(2, C_QCSR_INDEX)]   = m_axil_qdma_csr_rresp;
+  assign m_axil_qdma_csr_rready                 = axil_rready[C_QCSR_INDEX];
 
 `ifdef __rdma_enabled__
   // ERNIC0 (CMAC0/QSFP0)

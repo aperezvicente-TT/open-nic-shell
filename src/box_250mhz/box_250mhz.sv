@@ -49,6 +49,8 @@ module box_250mhz #(
   input   [16*NUM_PHYS_FUNC*NUM_QDMA-1:0] s_axis_qdma_h2c_tuser_src,
   input   [16*NUM_PHYS_FUNC*NUM_QDMA-1:0] s_axis_qdma_h2c_tuser_dst,
   input   [16*NUM_PHYS_FUNC*NUM_QDMA-1:0] s_axis_qdma_h2c_tuser_ptp_tag,
+  // Absolute qid forwarded from QDMA so the plugin can demux H2C to CMAC.
+  input   [11*NUM_PHYS_FUNC*NUM_QDMA-1:0] s_axis_qdma_h2c_tuser_qid,
   output     [NUM_PHYS_FUNC*NUM_QDMA-1:0] s_axis_qdma_h2c_tready,
 
   output     [NUM_PHYS_FUNC*NUM_QDMA-1:0] m_axis_qdma_c2h_tvalid,
@@ -59,6 +61,9 @@ module box_250mhz #(
   output  [16*NUM_PHYS_FUNC*NUM_QDMA-1:0] m_axis_qdma_c2h_tuser_src,
   output  [16*NUM_PHYS_FUNC*NUM_QDMA-1:0] m_axis_qdma_c2h_tuser_dst,
   output  [80*NUM_PHYS_FUNC*NUM_QDMA-1:0] m_axis_qdma_c2h_tuser_ptp_ts,
+  // Path γ: RDMA plugin tags CMAC-encoded absolute qid here.  Ignored by
+  // qdma_subsystem when EXT_QID=0 (non-RDMA builds).
+  output  [11*NUM_PHYS_FUNC*NUM_QDMA-1:0] m_axis_qdma_c2h_tuser_qid,
   input      [NUM_PHYS_FUNC*NUM_QDMA-1:0] m_axis_qdma_c2h_tready,
 
   output     [NUM_CMAC_PORT-1:0] m_axis_adap_tx_250mhz_tvalid,
@@ -132,6 +137,57 @@ module box_250mhz #(
   input                   [9 :0] s_rx_pkt_hndler_i_rq_db_addr,
   input                   [31:0] s_rx_pkt_hndler_i_rq_db_data,
   output                         s_rx_pkt_hndler_o_rq_db_rdy,
+
+  // ERNIC1: RoCE RX from CMAC1 classifier (plugin output → ERNIC1 RX input)
+  output                         m_axis_user2rdma1_roce_from_cmac_rx_tvalid,
+  output                 [511:0] m_axis_user2rdma1_roce_from_cmac_rx_tdata,
+  output                  [63:0] m_axis_user2rdma1_roce_from_cmac_rx_tkeep,
+  output                         m_axis_user2rdma1_roce_from_cmac_rx_tlast,
+  input                          m_axis_user2rdma1_roce_from_cmac_rx_tready,
+
+  // ERNIC1: TX path (ERNIC1 output → plugin → CMAC1 TX)
+  input                          s_axis_rdma2user1_to_cmac_tx_tvalid,
+  input                  [511:0] s_axis_rdma2user1_to_cmac_tx_tdata,
+  input                   [63:0] s_axis_rdma2user1_to_cmac_tx_tkeep,
+  input                          s_axis_rdma2user1_to_cmac_tx_tlast,
+  output                         s_axis_rdma2user1_to_cmac_tx_tready,
+
+  // ERNIC1: QDMA H2C non-RoCE bypass (plugin → ERNIC1 TX merger)
+  output                         m_axis_user2rdma1_from_qdma_tx_tvalid,
+  output                 [511:0] m_axis_user2rdma1_from_qdma_tx_tdata,
+  output                  [63:0] m_axis_user2rdma1_from_qdma_tx_tkeep,
+  output                         m_axis_user2rdma1_from_qdma_tx_tlast,
+  input                          m_axis_user2rdma1_from_qdma_tx_tready,
+
+  // ERNIC1: Immediate data sideband
+  input                   [63:0] s_axis_rdma2user1_ieth_immdt_tdata,
+  input                          s_axis_rdma2user1_ieth_immdt_tlast,
+  input                          s_axis_rdma2user1_ieth_immdt_tvalid,
+  output                         s_axis_rdma2user1_ieth_immdt_trdy,
+
+  // ERNIC1: send CQ doorbell
+  input                          s_resp_hndler1_i_send_cq_db_cnt_valid,
+  input                    [9:0] s_resp_hndler1_i_send_cq_db_addr,
+  input                   [31:0] s_resp_hndler1_i_send_cq_db_cnt,
+  output                         s_resp_hndler1_o_send_cq_db_rdy,
+
+  // ERNIC1: SQ producer-index doorbell
+  output                  [15:0] m_o_qp1_sq_pidb_hndshk,
+  output                  [31:0] m_o_qp1_sq_pidb_wr_addr_hndshk,
+  output                         m_o_qp1_sq_pidb_wr_valid_hndshk,
+  input                          m_i_qp1_sq_pidb_wr_rdy,
+
+  // ERNIC1: RQ consumer-index doorbell
+  output                  [15:0] m_o_qp1_rq_cidb_hndshk,
+  output                  [31:0] m_o_qp1_rq_cidb_wr_addr_hndshk,
+  output                         m_o_qp1_rq_cidb_wr_valid_hndshk,
+  input                          m_i_qp1_rq_cidb_wr_rdy,
+
+  // ERNIC1: RX packet handler RQ doorbell
+  input                          s_rx_pkt_hndler1_i_rq_db_data_valid,
+  input                    [9:0] s_rx_pkt_hndler1_i_rq_db_addr,
+  input                   [31:0] s_rx_pkt_hndler1_i_rq_db_data,
+  output                         s_rx_pkt_hndler1_o_rq_db_rdy,
 
   // Compute logic AXI-MM port
   output                         m_axi_compute_logic_awid,
@@ -219,6 +275,7 @@ module box_250mhz #(
     assign m_axis_qdma_c2h_tuser_src    = 0;
     assign m_axis_qdma_c2h_tuser_dst    = 0;
     assign m_axis_qdma_c2h_tuser_ptp_ts = 0;
+    assign m_axis_qdma_c2h_tuser_qid    = 0;
   end
   endgenerate
 
