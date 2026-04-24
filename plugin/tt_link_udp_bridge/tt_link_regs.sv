@@ -10,6 +10,10 @@
 //   0x002C/30: TT_CHIP_MAC_HI/LO
 //   0x0034:    MTU_EXTERNAL (reset: 1500)
 //   0x0400+:   stats (RO)
+//   0x0430:    stat_cls_passed   (tt_link_classifier frames forwarded)
+//   0x0434:    stat_cls_dropped  (tt_link_classifier frames dropped)
+//   0x0438:    stat_dmx_passed   (pkt_demux frames forwarded)
+//   0x043C:    stat_dmx_dropped  (pkt_demux frames dropped)
 
 module tt_link_regs (
   input  wire         s_axil_awvalid,
@@ -45,6 +49,11 @@ module tt_link_regs (
   input  wire [31:0]  stat_rx_bad_cksum,
   input  wire [31:0]  stat_rx_bad_port,
   input  wire [31:0]  stat_rx_oversize,
+  // F1 classifier / demux stats
+  input  wire [31:0]  stat_cls_passed,
+  input  wire [31:0]  stat_cls_dropped,
+  input  wire [31:0]  stat_dmx_passed,
+  input  wire [31:0]  stat_dmx_dropped,
 
   input  wire         aclk,
   input  wire         rst_n
@@ -130,6 +139,10 @@ module tt_link_regs (
           12'h424: s_axil_rdata <= stat_rx_bad_port;
           12'h428: s_axil_rdata <= stat_rx_bad_cksum;
           12'h42C: s_axil_rdata <= stat_rx_oversize;
+          12'h430: s_axil_rdata <= stat_cls_passed;
+          12'h434: s_axil_rdata <= stat_cls_dropped;
+          12'h438: s_axil_rdata <= stat_dmx_passed;
+          12'h43C: s_axil_rdata <= stat_dmx_dropped;
           default: s_axil_rdata <= 32'hDEAD_BEEF;
         endcase
       end
