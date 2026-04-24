@@ -499,6 +499,24 @@ if {$sim} {
 # Implement design
 if {$impl} {
     update_compile_order -fileset sources_1
+
+    # Vivado 2024.2 workaround for opt_design [Opt 31-67] orphan-LUT failure
+    # inside qdma_no_sriov's mdma_c2h_dsc_bypass_inst when en_axi_mm_qdma=true.
+    # ConstProp::cleanup trims the MM bypass arbiter (whose bypass inputs are
+    # tied to constants both internally — c2h_byp_in_mm_* — and externally —
+    # h2c_byp_in_st_vld=1'b0 in qdma_subsystem.sv) but leaves a LUT3 cell with
+    # a missing I2 connection.  Setting DONT_TOUCH=true on the QDMA IP cell
+    # prevents opt_design from propagating constants across the IP boundary
+    # into mdma_c2h_dsc_bypass_inst.  Applied via TCL.PRE hook so the cells
+    # exist post-synth when the property is set.
+    set _opt_pre_tcl ${top_build_dir}/opt_design_pre.tcl
+    set _fd [open $_opt_pre_tcl w]
+    puts $_fd "# Auto-generated workaround — see build.tcl"
+    puts $_fd "set_property DONT_TOUCH true \[get_cells -hier -filter {REF_NAME =~ qdma_no_sriov*}\] -quiet"
+    close $_fd
+    set_property STEPS.OPT_DESIGN.TCL.PRE $_opt_pre_tcl [get_runs impl_1]
+    puts "INFO: \[impl_1\] Applied opt_design TCL.PRE workaround for QDMA orphan LUT"
+
     _do_impl $jobs {"Performance_ExploreWithRemap"}
 }
 
