@@ -336,11 +336,14 @@ dict for {module module_dir} $module_dict {
             # Workaround: Vivado 2024.2 heap corruption (AR#1234567) in
             # Optimize2::timingOpt / ConstProp::cleanup for ERNIC IP —
             # disable timing-driven synth to avoid the crashing code path.
-            if {[string match "rdma_core*" $ip]} {
-                # Vivado 2024.2 bug: heap corruption in Optimize2::timingOpt /
-                # ConstProp::cleanup for ERNIC.  IP OOC runs do not expose
-                # STEPS.SYNTH_DESIGN.ARGS.MORE_OPTIONS, so patch the generated
-                # run script directly to add -no_timing_driven.
+            if {[string match "rdma_core*" $ip] || [string match "qdma_no_sriov*" $ip]} {
+                # Vivado 2024.2 bug: heap corruption / orphan-LUT in
+                # Optimize2::timingOpt / ConstProp::cleanup for RDMA and QDMA.
+                # RDMA (rdma_core) crashes opt_design; QDMA (qdma_no_sriov)
+                # leaves an orphan LUT in mdma_c2h_dsc_bypass_inst when
+                # en_axi_mm_qdma=true triggers the MM bypass arbiter.
+                # IP OOC runs do not expose STEPS.SYNTH_DESIGN.ARGS.MORE_OPTIONS,
+                # so patch the generated run script directly to add -no_timing_driven.
                 set _run_tcl [file join ${ip_build_dir} manage_ip \
                     manage_ip.runs ${ip}_synth_1 ${ip}.tcl]
                 if {[file exists $_run_tcl]} {
