@@ -262,12 +262,9 @@ module tt_link_udp_bridge_250mhz #(
     .rst_n               (rst_n)
   );
 
-  // F0 framer stub: insert [dst_mac 6B][src_mac 6B][0x1AF4 2B] at the front.
-  // Reuses the same 14-byte prepend pattern as udp_encap_tx but simpler
-  // (no IP header, no carry needed for 14 bytes — 14 mod 64 = 14, shift = 14-0 = 14 bytes
-  //  wait: we ADD 14 bytes so shift = 14, carry = 50 bytes).
-  // For F0 we instantiate tt_link_framer_stub which handles the 14B prepend.
-  tt_link_framer_stub framer_stub (
+  // Framer: insert [dst_mac 6B][src_mac 6B][0x1AF4 2B] at the front of the
+  // decapped TT-link payload so CMAC0 TX sends a valid TT-link Ethernet frame.
+  tt_link_framer framer_inst (
     .s_axis_tvalid      (dec_m_tvalid),
     .s_axis_tdata       (dec_m_tdata),
     .s_axis_tkeep       (dec_m_tkeep),
@@ -282,8 +279,8 @@ module tt_link_udp_bridge_250mhz #(
     .m_axis_tuser_size  (m_axis_cmac0_tx_tuser_size),
     .m_axis_tready      (m_axis_cmac0_tx_tready),
 
-    .cfg_local_mac      (cfg_local_mac),
-    .cfg_tt_chip_mac    (cfg_tt_chip_mac),
+    .cfg_dst_mac        (cfg_tt_chip_mac),
+    .cfg_src_mac        (cfg_local_mac),
 
     .clk                (axis_aclk),
     .rst_n              (rst_n)
