@@ -384,6 +384,43 @@ module open_nic_shell #(
   wire                   [1:0] axil_ptp_rresp;
   wire                         axil_ptp_rready;
 
+  wire                         axil_qdma_csr_awvalid;
+  wire                  [31:0] axil_qdma_csr_awaddr;
+  wire                         axil_qdma_csr_awready;
+  wire                         axil_qdma_csr_wvalid;
+  wire                  [31:0] axil_qdma_csr_wdata;
+  wire                   [3:0] axil_qdma_csr_wstrb;
+  wire                         axil_qdma_csr_wready;
+  wire                         axil_qdma_csr_bvalid;
+  wire                   [1:0] axil_qdma_csr_bresp;
+  wire                         axil_qdma_csr_bready;
+  wire                         axil_qdma_csr_arvalid;
+  wire                  [31:0] axil_qdma_csr_araddr;
+  wire                         axil_qdma_csr_arready;
+  wire                         axil_qdma_csr_rvalid;
+  wire                  [31:0] axil_qdma_csr_rdata;
+  wire                   [1:0] axil_qdma_csr_rresp;
+  wire                         axil_qdma_csr_rready;
+
+  wire     [NUM_QDMA-1:0] qdma_s_axil_csr_awready;
+  wire     [NUM_QDMA-1:0] qdma_s_axil_csr_wready;
+  wire     [NUM_QDMA-1:0] qdma_s_axil_csr_bvalid;
+  wire   [2*NUM_QDMA-1:0] qdma_s_axil_csr_bresp;
+  wire     [NUM_QDMA-1:0] qdma_s_axil_csr_arready;
+  wire     [NUM_QDMA-1:0] qdma_s_axil_csr_rvalid;
+  wire  [32*NUM_QDMA-1:0] qdma_s_axil_csr_rdata;
+  wire   [2*NUM_QDMA-1:0] qdma_s_axil_csr_rresp;
+  wire     [NUM_QDMA-1:0] qdma_s_csr_prog_done;
+
+  assign axil_qdma_csr_awready = qdma_s_axil_csr_awready[0];
+  assign axil_qdma_csr_wready  = qdma_s_axil_csr_wready[0];
+  assign axil_qdma_csr_bvalid  = qdma_s_axil_csr_bvalid[0];
+  assign axil_qdma_csr_bresp   = qdma_s_axil_csr_bresp[`getvec(2, 0)];
+  assign axil_qdma_csr_arready = qdma_s_axil_csr_arready[0];
+  assign axil_qdma_csr_rvalid  = qdma_s_axil_csr_rvalid[0];
+  assign axil_qdma_csr_rdata   = qdma_s_axil_csr_rdata[`getvec(32, 0)];
+  assign axil_qdma_csr_rresp   = qdma_s_axil_csr_rresp[`getvec(2, 0)];
+
   // QDMA subsystem interfaces to the box running at 250MHz
   wire     [NUM_PHYS_FUNC*NUM_QDMA-1:0] axis_qdma_h2c_tvalid;
   wire [512*NUM_PHYS_FUNC*NUM_QDMA-1:0] axis_qdma_h2c_tdata;
@@ -1635,6 +1672,24 @@ module open_nic_shell #(
     .m_axil_ptp_rresp    (axil_ptp_rresp),
     .m_axil_ptp_rready   (axil_ptp_rready),
 
+    .m_axil_qdma_csr_awvalid (axil_qdma_csr_awvalid),
+    .m_axil_qdma_csr_awaddr  (axil_qdma_csr_awaddr),
+    .m_axil_qdma_csr_awready (axil_qdma_csr_awready),
+    .m_axil_qdma_csr_wvalid  (axil_qdma_csr_wvalid),
+    .m_axil_qdma_csr_wdata   (axil_qdma_csr_wdata),
+    .m_axil_qdma_csr_wstrb   (axil_qdma_csr_wstrb),
+    .m_axil_qdma_csr_wready  (axil_qdma_csr_wready),
+    .m_axil_qdma_csr_bvalid  (axil_qdma_csr_bvalid),
+    .m_axil_qdma_csr_bresp   (axil_qdma_csr_bresp),
+    .m_axil_qdma_csr_bready  (axil_qdma_csr_bready),
+    .m_axil_qdma_csr_arvalid (axil_qdma_csr_arvalid),
+    .m_axil_qdma_csr_araddr  (axil_qdma_csr_araddr),
+    .m_axil_qdma_csr_arready (axil_qdma_csr_arready),
+    .m_axil_qdma_csr_rvalid  (axil_qdma_csr_rvalid),
+    .m_axil_qdma_csr_rdata   (axil_qdma_csr_rdata),
+    .m_axil_qdma_csr_rresp   (axil_qdma_csr_rresp),
+    .m_axil_qdma_csr_rready  (axil_qdma_csr_rready),
+
     .shell_rstn          (shell_rstn),
     .shell_rst_done      (shell_rst_done),
     .user_rstn           (user_rstn),
@@ -1799,6 +1854,27 @@ module open_nic_shell #(
       .s_axib_rvalid                        (qdma_s_axib_rvalid[i]),
       .s_axib_rready                        ((i == 0) ? axi_sys_mem_mux_rready    : 1'b1),
       .s_axib_ruser                         (qdma_s_axib_ruser[`getvec(64, i)]),
+      // AXI-Lite CSR: QDMA[0] receives host DMA-window programming; QDMA[1+] inputs tied off.
+      .s_csr_prog_done                      (qdma_s_csr_prog_done[i]),
+      .s_axil_csr_awvalid                   ((i == 0) ? axil_qdma_csr_awvalid    : 1'b0),
+      .s_axil_csr_awaddr                    ((i == 0) ? axil_qdma_csr_awaddr     : 32'd0),
+      .s_axil_csr_awprot                    (3'd0),
+      .s_axil_csr_awready                   (qdma_s_axil_csr_awready[i]),
+      .s_axil_csr_wvalid                    ((i == 0) ? axil_qdma_csr_wvalid     : 1'b0),
+      .s_axil_csr_wdata                     ((i == 0) ? axil_qdma_csr_wdata      : 32'd0),
+      .s_axil_csr_wstrb                     ((i == 0) ? axil_qdma_csr_wstrb      : 4'h0),
+      .s_axil_csr_wready                    (qdma_s_axil_csr_wready[i]),
+      .s_axil_csr_bvalid                    (qdma_s_axil_csr_bvalid[i]),
+      .s_axil_csr_bresp                     (qdma_s_axil_csr_bresp[`getvec(2, i)]),
+      .s_axil_csr_bready                    ((i == 0) ? axil_qdma_csr_bready     : 1'b1),
+      .s_axil_csr_arvalid                   ((i == 0) ? axil_qdma_csr_arvalid    : 1'b0),
+      .s_axil_csr_araddr                    ((i == 0) ? axil_qdma_csr_araddr     : 32'd0),
+      .s_axil_csr_arprot                    (3'd0),
+      .s_axil_csr_arready                   (qdma_s_axil_csr_arready[i]),
+      .s_axil_csr_rvalid                    (qdma_s_axil_csr_rvalid[i]),
+      .s_axil_csr_rdata                     (qdma_s_axil_csr_rdata[`getvec(32, i)]),
+      .s_axil_csr_rresp                     (qdma_s_axil_csr_rresp[`getvec(2, i)]),
+      .s_axil_csr_rready                    ((i == 0) ? axil_qdma_csr_rready     : 1'b1),
   `else // !`ifdef __synthesis__
       .s_axis_qdma_h2c_tvalid               (s_axis_qdma_h2c_sim_tvalid[i]),
       .s_axis_qdma_h2c_tdata                (s_axis_qdma_h2c_sim_tdata[`getvec(512, i)]),

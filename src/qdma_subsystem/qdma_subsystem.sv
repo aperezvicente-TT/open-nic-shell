@@ -23,6 +23,9 @@ module qdma_subsystem #(
   parameter int MAX_PKT_LEN   = 1518,
   parameter int USE_PHYS_FUNC = 1,
   parameter int NUM_PHYS_FUNC = 1,
+  // When EXT_QID=1, C2H qid comes from s_axis_c2h_tuser_qid upstream (plugin
+  // tags absolute qid per-CMAC).  Default 0 preserves legacy internal RSS.
+  parameter int EXT_QID       = 0,
   parameter int NUM_QUEUE     = 512
 ) (
   input                          s_axil_awvalid,
@@ -50,6 +53,9 @@ module qdma_subsystem #(
   output  [16*NUM_PHYS_FUNC-1:0] m_axis_h2c_tuser_src,
   output  [16*NUM_PHYS_FUNC-1:0] m_axis_h2c_tuser_dst,
   output  [16*NUM_PHYS_FUNC-1:0] m_axis_h2c_tuser_ptp_tag,
+  // Absolute qid forwarded with each H2C packet so the plugin can demux
+  // normal-ethernet traffic to the correct CMAC TX path (Path γ).
+  output  [11*NUM_PHYS_FUNC-1:0] m_axis_h2c_tuser_qid,
   input      [NUM_PHYS_FUNC-1:0] m_axis_h2c_tready,
 
   input      [NUM_PHYS_FUNC-1:0] s_axis_c2h_tvalid,
@@ -60,6 +66,7 @@ module qdma_subsystem #(
   input   [16*NUM_PHYS_FUNC-1:0] s_axis_c2h_tuser_src,
   input   [16*NUM_PHYS_FUNC-1:0] s_axis_c2h_tuser_dst,
   input   [80*NUM_PHYS_FUNC-1:0] s_axis_c2h_tuser_ptp_ts,
+  input   [11*NUM_PHYS_FUNC-1:0] s_axis_c2h_tuser_qid,   // EXT_QID=1 only
   output     [NUM_PHYS_FUNC-1:0] s_axis_c2h_tready,
 
 `ifdef __synthesis__
@@ -137,6 +144,28 @@ module qdma_subsystem #(
   output                         s_axib_rvalid,
   input                          s_axib_rready,
   output                  [63:0] s_axib_ruser,
+
+  // AXI-Lite CSR slave (125 MHz, kernel-programmable QDMA DMA window table)
+  output                         s_csr_prog_done,
+  input                   [31:0] s_axil_csr_awaddr,
+  input                    [2:0] s_axil_csr_awprot,
+  input                          s_axil_csr_awvalid,
+  output                         s_axil_csr_awready,
+  input                   [31:0] s_axil_csr_wdata,
+  input                    [3:0] s_axil_csr_wstrb,
+  input                          s_axil_csr_wvalid,
+  output                         s_axil_csr_wready,
+  output                         s_axil_csr_bvalid,
+  output                   [1:0] s_axil_csr_bresp,
+  input                          s_axil_csr_bready,
+  input                   [31:0] s_axil_csr_araddr,
+  input                    [2:0] s_axil_csr_arprot,
+  input                          s_axil_csr_arvalid,
+  output                         s_axil_csr_arready,
+  output                  [31:0] s_axil_csr_rdata,
+  output                   [1:0] s_axil_csr_rresp,
+  output                         s_axil_csr_rvalid,
+  input                          s_axil_csr_rready,
 `else // !`ifdef __synthesis__
   input                          s_axis_qdma_h2c_tvalid,
   input                  [511:0] s_axis_qdma_h2c_tdata,
@@ -530,7 +559,27 @@ module qdma_subsystem #(
     .s_axib_rlast                    (s_axib_rlast),
     .s_axib_rvalid                   (s_axib_rvalid),
     .s_axib_rready                   (s_axib_rready),
-    .s_axib_ruser                    (s_axib_ruser)
+    .s_axib_ruser                    (s_axib_ruser),
+    .s_csr_prog_done                 (s_csr_prog_done),
+    .s_axil_csr_awaddr               (s_axil_csr_awaddr),
+    .s_axil_csr_awprot               (s_axil_csr_awprot),
+    .s_axil_csr_awvalid              (s_axil_csr_awvalid),
+    .s_axil_csr_awready              (s_axil_csr_awready),
+    .s_axil_csr_wdata                (s_axil_csr_wdata),
+    .s_axil_csr_wstrb                (s_axil_csr_wstrb),
+    .s_axil_csr_wvalid               (s_axil_csr_wvalid),
+    .s_axil_csr_wready               (s_axil_csr_wready),
+    .s_axil_csr_bvalid               (s_axil_csr_bvalid),
+    .s_axil_csr_bresp                (s_axil_csr_bresp),
+    .s_axil_csr_bready               (s_axil_csr_bready),
+    .s_axil_csr_araddr               (s_axil_csr_araddr),
+    .s_axil_csr_arprot               (s_axil_csr_arprot),
+    .s_axil_csr_arvalid              (s_axil_csr_arvalid),
+    .s_axil_csr_arready              (s_axil_csr_arready),
+    .s_axil_csr_rdata                (s_axil_csr_rdata),
+    .s_axil_csr_rresp                (s_axil_csr_rresp),
+    .s_axil_csr_rvalid               (s_axil_csr_rvalid),
+    .s_axil_csr_rready               (s_axil_csr_rready)
   );
 `else // !`ifdef __synthesis__
   initial begin
@@ -685,6 +734,15 @@ module qdma_subsystem #(
     assign s_axib_rresp   = 2'd0;
     assign s_axib_rlast   = 1'b0;
     assign s_axib_ruser   = 64'd0;
+    assign s_csr_prog_done    = 1'b0;
+    assign s_axil_csr_awready = 1'b0;
+    assign s_axil_csr_wready  = 1'b0;
+    assign s_axil_csr_bvalid  = 1'b0;
+    assign s_axil_csr_bresp   = 2'b0;
+    assign s_axil_csr_arready = 1'b0;
+    assign s_axil_csr_rdata   = 32'b0;
+    assign s_axil_csr_rresp   = 2'b0;
+    assign s_axil_csr_rvalid  = 1'b0;
 `endif
   end
   else begin
@@ -910,7 +968,8 @@ module qdma_subsystem #(
         .FUNC_ID     (i),
         .QDMA_ID     (QDMA_ID),
         .MAX_PKT_LEN (MAX_PKT_LEN),
-        .MIN_PKT_LEN (MIN_PKT_LEN)
+        .MIN_PKT_LEN (MIN_PKT_LEN),
+        .EXT_QID     (EXT_QID)
       ) func_inst (
         .s_axil_awvalid        (axil_func_awvalid[i]),
         .s_axil_awaddr         (axil_func_awaddr[`getvec(32, i)]),
@@ -945,6 +1004,7 @@ module qdma_subsystem #(
         .m_axis_h2c_tuser_src  (m_axis_h2c_tuser_src[`getvec(16, i)]),
         .m_axis_h2c_tuser_dst  (m_axis_h2c_tuser_dst[`getvec(16, i)]),
         .m_axis_h2c_tuser_ptp_tag (m_axis_h2c_tuser_ptp_tag[`getvec(16, i)]),
+        .m_axis_h2c_tuser_qid  (m_axis_h2c_tuser_qid[`getvec(11, i)]),
         .m_axis_h2c_tready     (m_axis_h2c_tready[i]),
 
         .s_axis_c2h_tvalid     (s_axis_c2h_tvalid[i]),
@@ -955,6 +1015,7 @@ module qdma_subsystem #(
         .s_axis_c2h_tuser_src  (s_axis_c2h_tuser_src[`getvec(16, i)]),
         .s_axis_c2h_tuser_dst  (s_axis_c2h_tuser_dst[`getvec(16, i)]),
         .s_axis_c2h_tuser_ptp_ts (s_axis_c2h_tuser_ptp_ts[`getvec(80, i)]),
+        .s_axis_c2h_tuser_qid  (s_axis_c2h_tuser_qid[`getvec(11, i)]),
         .s_axis_c2h_tready     (s_axis_c2h_tready[i]),
 
         .m_axis_c2h_tvalid     (axis_c2h_tvalid[i]),
