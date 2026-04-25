@@ -522,7 +522,7 @@ if {$impl} {
     # Set STRATEGY first, THEN override MORE_OPTIONS — STRATEGY assignment
     # rewrites all step args, so MORE_OPTIONS must come after.
     set_property STRATEGY "Performance_ExploreWithRemap" [get_runs impl_1]
-    set_property -name STEPS.OPT_DESIGN.ARGS.MORE_OPTIONS -value {-retarget -sweep -bram_power_opt} -objects [get_runs impl_1]
+    set_property -name {STEPS.OPT_DESIGN.ARGS.MORE OPTIONS} -value {-retarget -sweep -bram_power_opt} -objects [get_runs impl_1]
     puts "INFO: \[impl_1\] opt_design configured with -retarget -sweep -bram_power_opt (skips -propconst to bypass QDMA orphan-LUT bug)"
 
     # Now run impl_1 without re-setting STRATEGY (empty strategies arg).
