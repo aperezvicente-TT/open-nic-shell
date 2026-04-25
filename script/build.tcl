@@ -500,51 +500,18 @@ if {$sim} {
 if {$impl} {
     update_compile_order -fileset sources_1
 
-    # Vivado 2024.2 workaround for opt_design [Opt 31-67] orphan-LUT failure
-    # inside qdma_no_sriov's mdma_c2h_dsc_bypass_inst when en_axi_mm_qdma=true.
-    # ConstProp::cleanup trims the MM bypass arbiter (whose bypass inputs are
-    # tied to constants both internally — c2h_byp_in_mm_* — and externally —
-    # h2c_byp_in_st_vld=1'b0 in qdma_subsystem.sv) but leaves a LUT3 cell with
-    # a missing I2 connection.
-    #
-    # Earlier attempt #1: TCL.PRE hook setting DONT_TOUCH on the QDMA cell.
-    # Did not fire correctly (the -hier filter found no matching REF_NAME
-    # at that point in the flow); silently no-op'd.
-    # Earlier attempt #2: -no_propconst flag.  opt_design rejects this as
-    # an unknown option — per `opt_design -help`, the way to disable
-    # propconst is to NOT pass it: when other optimizations are explicitly
-    # named, all unnamed default optimizations (-propconst,
-    # -bram_power_opt) are implicitly disabled.
-    #
-    # Fix: pass -retarget -sweep -bram_power_opt explicitly.  This
-    # re-runs the three defaults that aren't the bug source while
-    # implicitly skipping -propconst (and ConstProp::cleanup with it).
-    # Vivado 2024.2 workaround for [Opt 31-67] orphan LUT in
-    # mdma_c2h_dsc_bypass_inst.  Build #8 tried IS_ENABLED=false on opt_design
-    # but place_design then errored "Found memory core or Advanced IO Wizard
-    # core that needs to be (re)generated" — the DDR4 PHY needs opt_design
-    # to run.  So opt_design must run; we just need to keep its ConstProp
-    # pass away from the QDMA bypass arbiter.
-    #
-    # Solution: TCL.PRE hook that DONT_TOUCH's the bypass arbiter sub-tree.
-    # Selector is on instance NAME (not REF_NAME like attempt #4) and
-    # matches the exact failing module path.  Without -quiet so any "no
-    # cells matched" warning surfaces in the log.
+    # DIAGNOSTIC RUN: strip all opt_design workarounds, add -verbose so
+    # opt_design prints every constant-propagation / trim INFO message.
+    # Goal is to identify the exact upstream signal whose trim leaves the
+    # mdma_c2h_dsc_bypass_inst LUT input dangling, before deciding on a
+    # final mitigation (Vivado downgrade vs. targeted RTL change).
     set_property STRATEGY "Performance_ExploreWithRemap" [get_runs impl_1]
-    set _opt_pre_tcl ${top_build_dir}/opt_design_pre.tcl
-    set _fd [open $_opt_pre_tcl w]
-    puts $_fd "# Auto-generated workaround — see build.tcl"
-    puts $_fd "puts \"\\\[opt_pre\\\] DONT_TOUCH on QDMA bypass arbiter sub-tree\""
-    puts $_fd "set _byp_cells \[get_cells -hier -filter {NAME =~ */mdma_c2h_dsc_bypass_inst*}\]"
-    puts $_fd "puts \"\\\[opt_pre\\\] matched \[llength \$_byp_cells\] cells\""
-    puts $_fd "if {\[llength \$_byp_cells\] > 0} {"
-    puts $_fd "    set_property DONT_TOUCH true \$_byp_cells"
-    puts $_fd "}"
-    close $_fd
-    set_property STEPS.OPT_DESIGN.TCL.PRE $_opt_pre_tcl [get_runs impl_1]
-    puts "INFO: \[impl_1\] opt_design TCL.PRE workaround installed: DONT_TOUCH on */mdma_c2h_dsc_bypass_inst*"
+    set_property -name {STEPS.OPT_DESIGN.ARGS.VERBOSE} -value 1 -objects [get_runs impl_1]
+    # Bump message limits so opt_design INFO messages aren't truncated.
+    set_property -name {STEPS.OPT_DESIGN.ARGS.MORE OPTIONS} -value {} -objects [get_runs impl_1]
+    set_msg_config -severity INFO -limit 100000
+    puts "INFO: \[impl_1\] opt_design diagnostic mode: VERBOSE=1, message limit raised"
 
-    # Now run impl_1 without re-setting STRATEGY (empty strategies arg).
     _do_impl $jobs
 }
 
