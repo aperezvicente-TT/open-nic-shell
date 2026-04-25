@@ -519,14 +519,30 @@ if {$impl} {
     # Fix: pass -retarget -sweep -bram_power_opt explicitly.  This
     # re-runs the three defaults that aren't the bug source while
     # implicitly skipping -propconst (and ConstProp::cleanup with it).
-    # Set STRATEGY first (for place_design / route_design / phys_opt_design
-    # tuning), then explicitly DISABLE opt_design.  Strategy-driven
-    # opt_design sets -directive which can't be combined with individual
-    # opt flags (ERROR Vivado_Tcl 4-167 in build #7), so we skip the phase
-    # wholesale.
+    # Vivado 2024.2 workaround for [Opt 31-67] orphan LUT in
+    # mdma_c2h_dsc_bypass_inst.  Build #8 tried IS_ENABLED=false on opt_design
+    # but place_design then errored "Found memory core or Advanced IO Wizard
+    # core that needs to be (re)generated" — the DDR4 PHY needs opt_design
+    # to run.  So opt_design must run; we just need to keep its ConstProp
+    # pass away from the QDMA bypass arbiter.
+    #
+    # Solution: TCL.PRE hook that DONT_TOUCH's the bypass arbiter sub-tree.
+    # Selector is on instance NAME (not REF_NAME like attempt #4) and
+    # matches the exact failing module path.  Without -quiet so any "no
+    # cells matched" warning surfaces in the log.
     set_property STRATEGY "Performance_ExploreWithRemap" [get_runs impl_1]
-    set_property STEPS.OPT_DESIGN.IS_ENABLED false [get_runs impl_1]
-    puts "INFO: \[impl_1\] opt_design disabled to bypass QDMA orphan-LUT bug in ConstProp::cleanup"
+    set _opt_pre_tcl ${top_build_dir}/opt_design_pre.tcl
+    set _fd [open $_opt_pre_tcl w]
+    puts $_fd "# Auto-generated workaround — see build.tcl"
+    puts $_fd "puts \"\\\[opt_pre\\\] DONT_TOUCH on QDMA bypass arbiter sub-tree\""
+    puts $_fd "set _byp_cells \[get_cells -hier -filter {NAME =~ */mdma_c2h_dsc_bypass_inst*}\]"
+    puts $_fd "puts \"\\\[opt_pre\\\] matched \[llength \$_byp_cells\] cells\""
+    puts $_fd "if {\[llength \$_byp_cells\] > 0} {"
+    puts $_fd "    set_property DONT_TOUCH true \$_byp_cells"
+    puts $_fd "}"
+    close $_fd
+    set_property STEPS.OPT_DESIGN.TCL.PRE $_opt_pre_tcl [get_runs impl_1]
+    puts "INFO: \[impl_1\] opt_design TCL.PRE workaround installed: DONT_TOUCH on */mdma_c2h_dsc_bypass_inst*"
 
     # Now run impl_1 without re-setting STRATEGY (empty strategies arg).
     _do_impl $jobs
