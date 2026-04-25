@@ -505,17 +505,17 @@ if {$impl} {
     # ConstProp::cleanup trims the MM bypass arbiter (whose bypass inputs are
     # tied to constants both internally — c2h_byp_in_mm_* — and externally —
     # h2c_byp_in_st_vld=1'b0 in qdma_subsystem.sv) but leaves a LUT3 cell with
-    # a missing I2 connection.  Setting DONT_TOUCH=true on the QDMA IP cell
-    # prevents opt_design from propagating constants across the IP boundary
-    # into mdma_c2h_dsc_bypass_inst.  Applied via TCL.PRE hook so the cells
-    # exist post-synth when the property is set.
-    set _opt_pre_tcl ${top_build_dir}/opt_design_pre.tcl
-    set _fd [open $_opt_pre_tcl w]
-    puts $_fd "# Auto-generated workaround — see build.tcl"
-    puts $_fd "set_property DONT_TOUCH true \[get_cells -hier -filter {REF_NAME =~ qdma_no_sriov*}\] -quiet"
-    close $_fd
-    set_property STEPS.OPT_DESIGN.TCL.PRE $_opt_pre_tcl [get_runs impl_1]
-    puts "INFO: \[impl_1\] Applied opt_design TCL.PRE workaround for QDMA orphan LUT"
+    # a missing I2 connection.
+    #
+    # Earlier attempt: TCL.PRE hook setting DONT_TOUCH on the QDMA cell.  Did
+    # not fire correctly (the -hier filter found no matching REF_NAME at that
+    # point in the flow).  Falling back to disabling opt_design's constant
+    # propagation pass entirely via -no_propconst — the documented opt_design
+    # flag (UG835) that turns off the ConstProp::cleanup phase that triggers
+    # the orphan-LUT bug.  Cost: opt_design retains some constants that would
+    # otherwise be folded; trades minor area for a working build.
+    set_property STEPS.OPT_DESIGN.ARGS.MORE_OPTIONS {-no_propconst} [get_runs impl_1]
+    puts "INFO: \[impl_1\] opt_design -no_propconst enabled to bypass QDMA orphan-LUT bug"
 
     _do_impl $jobs {"Performance_ExploreWithRemap"}
 }
