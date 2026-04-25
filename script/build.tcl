@@ -507,17 +507,26 @@ if {$impl} {
     # h2c_byp_in_st_vld=1'b0 in qdma_subsystem.sv) but leaves a LUT3 cell with
     # a missing I2 connection.
     #
-    # Earlier attempt: TCL.PRE hook setting DONT_TOUCH on the QDMA cell.  Did
-    # not fire correctly (the -hier filter found no matching REF_NAME at that
-    # point in the flow).  Falling back to disabling opt_design's constant
-    # propagation pass entirely via -no_propconst — the documented opt_design
-    # flag (UG835) that turns off the ConstProp::cleanup phase that triggers
-    # the orphan-LUT bug.  Cost: opt_design retains some constants that would
-    # otherwise be folded; trades minor area for a working build.
-    set_property STEPS.OPT_DESIGN.ARGS.MORE_OPTIONS {-no_propconst} [get_runs impl_1]
-    puts "INFO: \[impl_1\] opt_design -no_propconst enabled to bypass QDMA orphan-LUT bug"
+    # Earlier attempt #1: TCL.PRE hook setting DONT_TOUCH on the QDMA cell.
+    # Did not fire correctly (the -hier filter found no matching REF_NAME
+    # at that point in the flow); silently no-op'd.
+    # Earlier attempt #2: -no_propconst flag.  opt_design rejects this as
+    # an unknown option — per `opt_design -help`, the way to disable
+    # propconst is to NOT pass it: when other optimizations are explicitly
+    # named, all unnamed default optimizations (-propconst,
+    # -bram_power_opt) are implicitly disabled.
+    #
+    # Fix: pass -retarget -sweep -bram_power_opt explicitly.  This
+    # re-runs the three defaults that aren't the bug source while
+    # implicitly skipping -propconst (and ConstProp::cleanup with it).
+    # Set STRATEGY first, THEN override MORE_OPTIONS — STRATEGY assignment
+    # rewrites all step args, so MORE_OPTIONS must come after.
+    set_property STRATEGY "Performance_ExploreWithRemap" [get_runs impl_1]
+    set_property -name STEPS.OPT_DESIGN.ARGS.MORE_OPTIONS -value {-retarget -sweep -bram_power_opt} -objects [get_runs impl_1]
+    puts "INFO: \[impl_1\] opt_design configured with -retarget -sweep -bram_power_opt (skips -propconst to bypass QDMA orphan-LUT bug)"
 
-    _do_impl $jobs {"Performance_ExploreWithRemap"}
+    # Now run impl_1 without re-setting STRATEGY (empty strategies arg).
+    _do_impl $jobs
 }
 
 if {$post_impl} {
