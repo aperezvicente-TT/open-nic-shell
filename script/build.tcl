@@ -519,11 +519,14 @@ if {$impl} {
     # Fix: pass -retarget -sweep -bram_power_opt explicitly.  This
     # re-runs the three defaults that aren't the bug source while
     # implicitly skipping -propconst (and ConstProp::cleanup with it).
-    # Set STRATEGY first, THEN override MORE_OPTIONS — STRATEGY assignment
-    # rewrites all step args, so MORE_OPTIONS must come after.
+    # Set STRATEGY first (for place_design / route_design / phys_opt_design
+    # tuning), then explicitly DISABLE opt_design.  Strategy-driven
+    # opt_design sets -directive which can't be combined with individual
+    # opt flags (ERROR Vivado_Tcl 4-167 in build #7), so we skip the phase
+    # wholesale.
     set_property STRATEGY "Performance_ExploreWithRemap" [get_runs impl_1]
-    set_property -name {STEPS.OPT_DESIGN.ARGS.MORE OPTIONS} -value {-retarget -sweep -bram_power_opt} -objects [get_runs impl_1]
-    puts "INFO: \[impl_1\] opt_design configured with -retarget -sweep -bram_power_opt (skips -propconst to bypass QDMA orphan-LUT bug)"
+    set_property STEPS.OPT_DESIGN.IS_ENABLED false [get_runs impl_1]
+    puts "INFO: \[impl_1\] opt_design disabled to bypass QDMA orphan-LUT bug in ConstProp::cleanup"
 
     # Now run impl_1 without re-setting STRATEGY (empty strategies arg).
     _do_impl $jobs
