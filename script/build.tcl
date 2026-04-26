@@ -500,37 +500,7 @@ if {$sim} {
 if {$impl} {
     update_compile_order -fileset sources_1
 
-    # Vivado 2024.2 v4 fix — confirmed root cause from build #10's verbose log:
-    # The QDMA IP ships driverless internal nets inside mdma_c2h_dsc_bypass_inst
-    # (c2h_byp_in_mm_{cidx,radr,wadr}[*] inside mdma_c2h_round_robin_mm_dsc).
-    # These are not opt_design trimming victims — they are pre-existing holes
-    # in the IP RTL.  Vivado 2024.2's tightened connectivity check correctly
-    # flags them as [Opt 31-155] warnings that escalate to [Opt 31-65/-67]
-    # errors when opt_design completes without resolving them.
-    #
-    # Fix: TCL.PRE on opt_design that calls set_logic_zero on the driverless
-    # nets, providing constant-zero drivers before opt_design runs.  After
-    # the constants are tied, opt_design's standard trim phase folds the
-    # LUTs cleanly (LUTs whose inputs are constant 0 reduce to constants
-    # themselves) and the connectivity check passes.
-    set_property STRATEGY "Performance_ExploreWithRemap" [get_runs impl_1]
-    set _opt_pre_tcl ${top_build_dir}/opt_design_pre.tcl
-    set _fd [open $_opt_pre_tcl w]
-    puts $_fd "# Auto-generated workaround — see build.tcl"
-    puts $_fd "puts \"\\\[opt_pre\\\] tying QDMA IP driverless bypass-in nets to logic 0\""
-    puts $_fd "set _patterns {*c2h_byp_in_mm_cidx* *c2h_byp_in_mm_radr* *c2h_byp_in_mm_wadr* *c2h_byp_in_mm_len* *c2h_byp_in_mm_qid* *c2h_byp_in_mm_error*}"
-    puts $_fd "foreach _p \$_patterns {"
-    puts $_fd "    set _nets \[get_nets -hier -filter \"NAME =~ \$_p && DRIVERLESS == 1\" -quiet\]"
-    puts $_fd "    if {\[llength \$_nets\] > 0} {"
-    puts $_fd "        puts \"\\\[opt_pre\\\] tying \[llength \$_nets\] nets matching \$_p\""
-    puts $_fd "        set_logic_zero \$_nets"
-    puts $_fd "    }"
-    puts $_fd "}"
-    close $_fd
-    set_property STEPS.OPT_DESIGN.TCL.PRE $_opt_pre_tcl [get_runs impl_1]
-    puts "INFO: \[impl_1\] opt_design TCL.PRE: set_logic_zero on QDMA bypass-in driverless nets"
-
-    _do_impl $jobs
+    _do_impl $jobs {"Performance_ExploreWithRemap"}
 }
 
 if {$post_impl} {
