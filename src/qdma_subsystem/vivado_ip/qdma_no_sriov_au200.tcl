@@ -44,7 +44,7 @@ set_property -dict {
     CONFIG.en_axi_mm_qdma {true}
     CONFIG.en_bridge_slv {true}
     CONFIG.axibar_highaddr_0 {0x000000FFFFFFFFFF}
-    CONFIG.axibar_notranslate {false}
+    CONFIG.axibar_notranslate {true}
     CONFIG.SYS_RST_N_BOARD_INTERFACE {pcie_perstn}
     CONFIG.PCIE_BOARD_INTERFACE {pci_express_x16}
     CONFIG.xlnx_ref_board {AU200}
