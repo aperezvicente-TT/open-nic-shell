@@ -22,6 +22,6 @@ vivado -mode batch -source build.tcl -tclargs \
     -num_qdma       1 \
     -num_queue      2048 \
     -max_pkt_len    4096 \
-    -pkt_cap        64 \
+    -pkt_cap        4 \
     -user_plugin    ../plugin/tt_link_udp_bridge \
     2>&1 | tee build_tt_link.log
