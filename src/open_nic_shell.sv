@@ -1257,63 +1257,6 @@ module open_nic_shell #(
   wire         axi_sys_mem_mux_rvalid;
   wire         axi_sys_mem_mux_rready;
 
-  // Per-QDMA s_axib outputs. Only QDMA[0] drives the sys_mem mux; QDMA[1..N-1]
-  // receive zero inputs so their outputs are ignored.
-  wire     [NUM_QDMA-1:0] qdma_s_axib_awready;
-  wire     [NUM_QDMA-1:0] qdma_s_axib_wready;
-  wire     [NUM_QDMA-1:0] qdma_s_axib_bvalid;
-  wire   [4*NUM_QDMA-1:0] qdma_s_axib_bid;
-  wire   [2*NUM_QDMA-1:0] qdma_s_axib_bresp;
-  wire     [NUM_QDMA-1:0] qdma_s_axib_arready;
-  wire     [NUM_QDMA-1:0] qdma_s_axib_rvalid;
-  wire   [4*NUM_QDMA-1:0] qdma_s_axib_rid;
-  wire [512*NUM_QDMA-1:0] qdma_s_axib_rdata;
-  wire   [2*NUM_QDMA-1:0] qdma_s_axib_rresp;
-  wire     [NUM_QDMA-1:0] qdma_s_axib_rlast;
-  wire  [64*NUM_QDMA-1:0] qdma_s_axib_ruser;
-
-  // Route X — per-QDMA m_axi_* DMA master outputs (flattened, getvec-indexed).
-  // QDMA[0] m_axi_* consumed at axi_interconnect_to_dev_mem_inst; QDMA[1..N-1]
-  // outputs dangle (NUM_QDMA=1 in v4; dual-QDMA would need master-side arbitration).
-  wire   [4*NUM_QDMA-1:0] qdma_m_axi_awid;
-  wire  [64*NUM_QDMA-1:0] qdma_m_axi_awaddr;
-  wire  [32*NUM_QDMA-1:0] qdma_m_axi_awuser;
-  wire   [8*NUM_QDMA-1:0] qdma_m_axi_awlen;
-  wire   [3*NUM_QDMA-1:0] qdma_m_axi_awsize;
-  wire   [2*NUM_QDMA-1:0] qdma_m_axi_awburst;
-  wire   [3*NUM_QDMA-1:0] qdma_m_axi_awprot;
-  wire     [NUM_QDMA-1:0] qdma_m_axi_awvalid;
-  wire     [NUM_QDMA-1:0] qdma_m_axi_awready;
-  wire     [NUM_QDMA-1:0] qdma_m_axi_awlock;
-  wire   [4*NUM_QDMA-1:0] qdma_m_axi_awcache;
-  wire [512*NUM_QDMA-1:0] qdma_m_axi_wdata;
-  wire  [64*NUM_QDMA-1:0] qdma_m_axi_wuser;
-  wire  [64*NUM_QDMA-1:0] qdma_m_axi_wstrb;
-  wire     [NUM_QDMA-1:0] qdma_m_axi_wlast;
-  wire     [NUM_QDMA-1:0] qdma_m_axi_wvalid;
-  wire     [NUM_QDMA-1:0] qdma_m_axi_wready;
-  wire   [4*NUM_QDMA-1:0] qdma_m_axi_bid;
-  wire   [2*NUM_QDMA-1:0] qdma_m_axi_bresp;
-  wire     [NUM_QDMA-1:0] qdma_m_axi_bvalid;
-  wire     [NUM_QDMA-1:0] qdma_m_axi_bready;
-  wire   [4*NUM_QDMA-1:0] qdma_m_axi_arid;
-  wire  [64*NUM_QDMA-1:0] qdma_m_axi_araddr;
-  wire  [32*NUM_QDMA-1:0] qdma_m_axi_aruser;
-  wire   [8*NUM_QDMA-1:0] qdma_m_axi_arlen;
-  wire   [3*NUM_QDMA-1:0] qdma_m_axi_arsize;
-  wire   [2*NUM_QDMA-1:0] qdma_m_axi_arburst;
-  wire   [3*NUM_QDMA-1:0] qdma_m_axi_arprot;
-  wire     [NUM_QDMA-1:0] qdma_m_axi_arvalid;
-  wire     [NUM_QDMA-1:0] qdma_m_axi_arready;
-  wire     [NUM_QDMA-1:0] qdma_m_axi_arlock;
-  wire   [4*NUM_QDMA-1:0] qdma_m_axi_arcache;
-  wire   [4*NUM_QDMA-1:0] qdma_m_axi_rid;
-  wire [512*NUM_QDMA-1:0] qdma_m_axi_rdata;
-  wire   [2*NUM_QDMA-1:0] qdma_m_axi_rresp;
-  wire     [NUM_QDMA-1:0] qdma_m_axi_rlast;
-  wire     [NUM_QDMA-1:0] qdma_m_axi_rvalid;
-  wire     [NUM_QDMA-1:0] qdma_m_axi_rready;
-
   // Tier 3 → DDR4 output (7-bit ID, 34-bit addr)
   wire   [6:0] axi_ddr4_awid;
   wire  [33:0] axi_ddr4_awaddr;
@@ -1425,6 +1368,61 @@ module open_nic_shell #(
   assign cmac1_roce_axis_tready = 1'b1;
   assign cmac1_roce_axis_tuser  = 1'b1;
 `endif // __rdma_enabled__ (wire declarations)
+
+  // Per-QDMA s_axib outputs — always declared: QDMA IP always has these ports.
+  // Only QDMA[0] drives the sys_mem mux when __rdma_enabled__; otherwise dangling.
+  wire     [NUM_QDMA-1:0] qdma_s_axib_awready;
+  wire     [NUM_QDMA-1:0] qdma_s_axib_wready;
+  wire     [NUM_QDMA-1:0] qdma_s_axib_bvalid;
+  wire   [4*NUM_QDMA-1:0] qdma_s_axib_bid;
+  wire   [2*NUM_QDMA-1:0] qdma_s_axib_bresp;
+  wire     [NUM_QDMA-1:0] qdma_s_axib_arready;
+  wire     [NUM_QDMA-1:0] qdma_s_axib_rvalid;
+  wire   [4*NUM_QDMA-1:0] qdma_s_axib_rid;
+  wire [512*NUM_QDMA-1:0] qdma_s_axib_rdata;
+  wire   [2*NUM_QDMA-1:0] qdma_s_axib_rresp;
+  wire     [NUM_QDMA-1:0] qdma_s_axib_rlast;
+  wire  [64*NUM_QDMA-1:0] qdma_s_axib_ruser;
+
+  // Per-QDMA m_axi_* DMA master outputs — always declared for the same reason.
+  wire   [4*NUM_QDMA-1:0] qdma_m_axi_awid;
+  wire  [64*NUM_QDMA-1:0] qdma_m_axi_awaddr;
+  wire  [32*NUM_QDMA-1:0] qdma_m_axi_awuser;
+  wire   [8*NUM_QDMA-1:0] qdma_m_axi_awlen;
+  wire   [3*NUM_QDMA-1:0] qdma_m_axi_awsize;
+  wire   [2*NUM_QDMA-1:0] qdma_m_axi_awburst;
+  wire   [3*NUM_QDMA-1:0] qdma_m_axi_awprot;
+  wire     [NUM_QDMA-1:0] qdma_m_axi_awvalid;
+  wire     [NUM_QDMA-1:0] qdma_m_axi_awready;
+  wire     [NUM_QDMA-1:0] qdma_m_axi_awlock;
+  wire   [4*NUM_QDMA-1:0] qdma_m_axi_awcache;
+  wire [512*NUM_QDMA-1:0] qdma_m_axi_wdata;
+  wire  [64*NUM_QDMA-1:0] qdma_m_axi_wuser;
+  wire  [64*NUM_QDMA-1:0] qdma_m_axi_wstrb;
+  wire     [NUM_QDMA-1:0] qdma_m_axi_wlast;
+  wire     [NUM_QDMA-1:0] qdma_m_axi_wvalid;
+  wire     [NUM_QDMA-1:0] qdma_m_axi_wready;
+  wire   [4*NUM_QDMA-1:0] qdma_m_axi_bid;
+  wire   [2*NUM_QDMA-1:0] qdma_m_axi_bresp;
+  wire     [NUM_QDMA-1:0] qdma_m_axi_bvalid;
+  wire     [NUM_QDMA-1:0] qdma_m_axi_bready;
+  wire   [4*NUM_QDMA-1:0] qdma_m_axi_arid;
+  wire  [64*NUM_QDMA-1:0] qdma_m_axi_araddr;
+  wire  [32*NUM_QDMA-1:0] qdma_m_axi_aruser;
+  wire   [8*NUM_QDMA-1:0] qdma_m_axi_arlen;
+  wire   [3*NUM_QDMA-1:0] qdma_m_axi_arsize;
+  wire   [2*NUM_QDMA-1:0] qdma_m_axi_arburst;
+  wire   [3*NUM_QDMA-1:0] qdma_m_axi_arprot;
+  wire     [NUM_QDMA-1:0] qdma_m_axi_arvalid;
+  wire     [NUM_QDMA-1:0] qdma_m_axi_arready;
+  wire     [NUM_QDMA-1:0] qdma_m_axi_arlock;
+  wire   [4*NUM_QDMA-1:0] qdma_m_axi_arcache;
+  wire   [4*NUM_QDMA-1:0] qdma_m_axi_rid;
+  wire [512*NUM_QDMA-1:0] qdma_m_axi_rdata;
+  wire   [2*NUM_QDMA-1:0] qdma_m_axi_rresp;
+  wire     [NUM_QDMA-1:0] qdma_m_axi_rlast;
+  wire     [NUM_QDMA-1:0] qdma_m_axi_rvalid;
+  wire     [NUM_QDMA-1:0] qdma_m_axi_rready;
 
   wire                  [31:0] shell_rstn;
   wire                  [31:0] shell_rst_done;
