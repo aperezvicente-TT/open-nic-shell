@@ -21,4 +21,11 @@
 `define getbit(width, index, offset)    ((index)*(width) + (offset))
 `define getvec(width, index)            ((index)*(width)) +: (width)
 
+// Boards with status LEDs wired to FPGA gpio (Alveo U200, U250)
+`ifdef __au200__
+  `define __has_gpio_led__
+`elsif __au250__
+  `define __has_gpio_led__
+`endif
+
 `endif

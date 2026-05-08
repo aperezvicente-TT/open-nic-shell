@@ -52,12 +52,13 @@ module open_nic_shell #(
   input                    [3:0] satellite_gpio,
   output                   [2:0] gpio_led,
 `elsif __au250__
-  output                   [1:0] qsfp_resetl, 
+  output                   [1:0] qsfp_resetl,
   input                    [1:0] qsfp_modprsl,
-  input                    [1:0] qsfp_intl,   
+  input                    [1:0] qsfp_intl,
   output                   [1:0] qsfp_lpmode,
   output                   [1:0] qsfp_modsell,
   input                    [3:0] satellite_gpio,
+  output                   [2:0] gpio_led,
 `elsif __au45n__
   input                    [1:0] satellite_gpio,
 `elsif __xup_vv8__
@@ -2474,8 +2475,8 @@ module open_nic_shell #(
     .cmac_clk                        (cmac_clk)
   );
 
-  // --- LED logic (AU200: LED[0]=Red heartbeat, LED[1]=Yellow QSFP1, LED[2]=Green QSFP0) ---
-`ifdef __au200__
+  // --- LED logic (AU200/AU250: LED[0]=Red heartbeat, LED[1]=Yellow QSFP1, LED[2]=Green QSFP0) ---
+`ifdef __has_gpio_led__
   logic [26:0] led_hb_cnt;
   always_ff @(posedge axil_aclk[0]) led_hb_cnt <= led_hb_cnt + 1'b1;
 
