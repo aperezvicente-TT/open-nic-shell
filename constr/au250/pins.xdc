@@ -35,6 +35,20 @@ if {$num_ports >= 2} {
 
 }
 
+# Board LEDs
+# LED[0] Red    - Heartbeat (bitstream alive)
+# LED[1] Yellow - QSFP1 link/activity
+# LED[2] Green  - QSFP0 link/activity
+set_property PACKAGE_PIN BC21 [get_ports {gpio_led[0]}]
+set_property PACKAGE_PIN BB21 [get_ports {gpio_led[1]}]
+set_property PACKAGE_PIN BA20 [get_ports {gpio_led[2]}]
+set_property IOSTANDARD LVCMOS12 [get_ports {gpio_led[0]}]
+set_property IOSTANDARD LVCMOS12 [get_ports {gpio_led[1]}]
+set_property IOSTANDARD LVCMOS12 [get_ports {gpio_led[2]}]
+set_property SLEW SLOW [get_ports {gpio_led[*]}]
+set_property DRIVE 8   [get_ports {gpio_led[*]}]
+set_false_path -to [get_ports {gpio_led[*]}]
+
 set_property -dict {PACKAGE_PIN BB19 IOSTANDARD LVCMOS12 DRIVE 8} [get_ports satellite_uart_0_txd]
 set_property -dict {PACKAGE_PIN BA19 IOSTANDARD LVCMOS12}         [get_ports satellite_uart_0_rxd]
 set_property -dict {PACKAGE_PIN AR20 IOSTANDARD LVCMOS12}         [get_ports satellite_gpio[0]]
