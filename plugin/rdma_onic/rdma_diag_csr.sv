@@ -9,7 +9,7 @@
 // project_b7_dual_cmac_block_persists_2026_05_07.md).
 //
 // Counter map (offsets are byte-addressable inside the slave's address
-// window; reg_addr[5:2] selects the counter index 0..15):
+// window; reg_addr[6:2] selects the counter index 0..17):
 //
 //   0x000  RX0_adap_in     CMAC0 wire RX into 250MHz adapter (tlast xfer)
 //   0x004  RX0_clf_out     after classifier_inst
@@ -27,6 +27,28 @@
 //   0x034  TX1_h2c_demux   QDMA H2C demuxed → CMAC1
 //   0x038  TX0_adap_out    out to CMAC0 TX adapter (post per-CMAC arbiter)
 //   0x03C  TX1_adap_out    out to CMAC1 TX adapter
+//
+// Trip wires (any non-zero value indicates an RTL invariant violation —
+// see rdma_onic_250mhz.sv for the assertion logic):
+//
+//   0x040  RX_MARK_MISMATCH  Beats where the per-CMAC FIFO TID marker
+//                            (set 0 at arb_in0 ingress, 1 at arb_in1
+//                            ingress) disagrees with the arbiter grant
+//                            at the C2H output.  Catches FIFO data/
+//                            sideband desync, ECC bit-flip, or any
+//                            future bug where data from one CMAC ends
+//                            up tagged with the other CMAC's qid.
+//   0x044  TX_QID_CHANGED    Mid-packet beats where the QDMA H2C
+//                            tuser_qid changed from the value captured
+//                            on the first beat of the current packet.
+//                            Should be 0 always (AXI-S sideband held
+//                            for the duration of the packet); non-zero
+//                            indicates a QDMA H2C protocol violation
+//                            or an upstream qid bus glitch — the H2C
+//                            demux already locks routing on first beat,
+//                            so this is a witness for whether the qid
+//                            misroute (if any) originates upstream of
+//                            the plugin.
 //
 // Bisect rule for cross-CMAC RX misroute:
 //   Run a single-port traffic test (load only on CMAC0 wire, none on CMAC1).
@@ -50,7 +72,7 @@
 `timescale 1ns/1ps
 module rdma_diag_csr #(
   parameter int REG_ADDR_W   = 12,
-  parameter int NUM_COUNTERS = 16
+  parameter int NUM_COUNTERS = 18
 )(
   // AXI-Lite slave (matches axi_lite_slave port list 1:1)
   input         s_axil_awvalid,
@@ -144,12 +166,13 @@ module rdma_diag_csr #(
     .reg_rstn       (dp_aresetn)
   );
 
-  // Lower 4 bits of the 4-byte-aligned offset select the counter index
-  // (reg_addr is byte-addressed; counter table covers offsets 0x00..0x3C).
-  // Higher offsets read back zero so the unused window inside the 4 KB
-  // window is well-defined.
-  wire [3:0] cnt_idx = reg_addr[5:2];
-  wire       in_window = (reg_addr[REG_ADDR_W-1:6] == {(REG_ADDR_W-6){1'b0}});
+  // Lower 5 bits of the 4-byte-aligned offset select the counter index
+  // (reg_addr is byte-addressed; counter table covers offsets 0x00..0x44
+  // for 18 counters).  Higher offsets read back zero so the unused
+  // window inside the 4 KB window is well-defined.
+  wire [4:0] cnt_idx   = reg_addr[6:2];
+  wire       in_window = (cnt_idx < NUM_COUNTERS[4:0])
+                      && (reg_addr[REG_ADDR_W-1:7] == {(REG_ADDR_W-7){1'b0}});
 
   always @(posedge dp_aclk) begin
     if (~dp_aresetn) begin

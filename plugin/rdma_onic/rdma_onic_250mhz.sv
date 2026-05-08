@@ -296,13 +296,14 @@ module rdma_onic_250mhz #(
   // =========================================================================
   // Forward-declared net for the diag CSR's increment pulses; wired up after
   // the RX/TX path signals are defined further below in this module.  The
-  // wire is sized to the module's NUM_COUNTERS.
-  wire [15:0] diag_cnt_inc;
+  // wire is sized to the module's NUM_COUNTERS.  Indices 0..15 are the
+  // hop counters; 16/17 are RX/TX trip-wire mismatch counters.
+  wire [17:0] diag_cnt_inc;
 
   generate if (NUM_QDMA <= 1) begin
     rdma_diag_csr #(
       .REG_ADDR_W   (12),
-      .NUM_COUNTERS (16)
+      .NUM_COUNTERS (18)
     ) reg_inst (
       .s_axil_awvalid (s_axil_awvalid),
       .s_axil_awaddr  (s_axil_awaddr),
@@ -456,6 +457,7 @@ module rdma_onic_250mhz #(
   // Demux state: lock to chosen CMAC until tlast so a packet isn't split.
   reg        h2c_dmux_locked;
   reg        h2c_dmux_sel;     // 0 = CMAC0 path, 1 = CMAC1 path
+  reg [10:0] h2c_captured_qid; // qid sampled on first beat of current packet
   wire       h2c_first_beat_sel = (h2c_tuser_qid >= PER_CMAC_QUEUES);
   wire       h2c_cur_sel        = h2c_dmux_locked ? h2c_dmux_sel : h2c_first_beat_sel;
 
@@ -472,19 +474,30 @@ module rdma_onic_250mhz #(
 
   always @(posedge axis_aclk) begin
     if (~axis_aresetn) begin
-      h2c_dmux_locked <= 1'b0;
-      h2c_dmux_sel    <= 1'b0;
+      h2c_dmux_locked  <= 1'b0;
+      h2c_dmux_sel     <= 1'b0;
+      h2c_captured_qid <= 11'd0;
     end
     else if (h2c_tvalid && h2c_granted_ready) begin
       if (~h2c_dmux_locked) begin
-        h2c_dmux_sel    <= h2c_first_beat_sel;
-        h2c_dmux_locked <= ~h2c_tlast;
+        h2c_dmux_sel     <= h2c_first_beat_sel;
+        h2c_dmux_locked  <= ~h2c_tlast;
+        h2c_captured_qid <= h2c_tuser_qid;
       end
       else if (h2c_tlast) begin
         h2c_dmux_locked <= 1'b0;
       end
     end
   end
+
+  // TX qid trip wire: AXI-S sideband must be held stable for the entire
+  // packet.  Pulse fires on any mid-packet beat where h2c_tuser_qid no
+  // longer matches the value captured on the first beat — this is a
+  // protocol violation by the H2C source, not something the demux can
+  // recover from (routing already locked).  Counted at diag_cnt_inc[17].
+  wire tx_qid_changed_pulse = h2c_tvalid && h2c_granted_ready
+                            && h2c_dmux_locked
+                            && (h2c_tuser_qid != h2c_captured_qid);
 
   // ----- Per-CMAC TX arbiter: {normal-TX, ERNIC-TX} → CMAC TX -----------
   // CMAC_i arbiter inputs: normal TX from demux, ERNIC_i TX.
@@ -789,6 +802,7 @@ module rdma_onic_250mhz #(
   wire [63:0]  arb0_in_tkeep;
   wire         arb0_in_tlast;
   wire [111:0] arb0_in_tuser;  // {ptp_ts[79:0], src[15:0], size[15:0]}
+  wire         arb0_in_tid;    // CMAC marker (set 0 at FIFO ingress, see below)
 
   // CMAC1 input side
   wire         arb1_in_tvalid;
@@ -797,6 +811,7 @@ module rdma_onic_250mhz #(
   wire [63:0]  arb1_in_tkeep;
   wire         arb1_in_tlast;
   wire [111:0] arb1_in_tuser;
+  wire         arb1_in_tid;    // CMAC marker (set 1 at FIFO ingress)
 
   axi_stream_packet_fifo #(
     .CLOCKING_MODE    ("common_clock"),
@@ -818,7 +833,7 @@ module rdma_onic_250mhz #(
     .s_axis_tkeep  (flt_host_tkeep),
     .s_axis_tstrb  ({64{1'b1}}),
     .s_axis_tlast  (flt_host_tlast),
-    .s_axis_tid    (1'b0),
+    .s_axis_tid    (1'b0),                   // CMAC0 marker: 0
     .s_axis_tdest  (1'b0),
     .s_axis_tuser  ({s_axis_adap_rx_250mhz_tuser_ptp_ts[79:0],
                      s_axis_adap_rx_250mhz_tuser_src[15:0],
@@ -830,7 +845,7 @@ module rdma_onic_250mhz #(
     .m_axis_tkeep  (arb0_in_tkeep),
     .m_axis_tstrb  (),
     .m_axis_tlast  (arb0_in_tlast),
-    .m_axis_tid    (),
+    .m_axis_tid    (arb0_in_tid),
     .m_axis_tdest  (),
     .m_axis_tuser  (arb0_in_tuser),
 
@@ -861,7 +876,7 @@ module rdma_onic_250mhz #(
     .s_axis_tkeep  (flt1_host_tkeep),
     .s_axis_tstrb  ({64{1'b1}}),
     .s_axis_tlast  (flt1_host_tlast),
-    .s_axis_tid    (1'b0),
+    .s_axis_tid    (1'b1),                   // CMAC1 marker: 1
     .s_axis_tdest  (1'b0),
     .s_axis_tuser  ({s_axis_adap_rx_250mhz_tuser_ptp_ts[159:80],
                      s_axis_adap_rx_250mhz_tuser_src[31:16],
@@ -873,7 +888,7 @@ module rdma_onic_250mhz #(
     .m_axis_tkeep  (arb1_in_tkeep),
     .m_axis_tstrb  (),
     .m_axis_tlast  (arb1_in_tlast),
-    .m_axis_tid    (),
+    .m_axis_tid    (arb1_in_tid),
     .m_axis_tdest  (),
     .m_axis_tuser  (arb1_in_tuser),
 
@@ -1006,6 +1021,23 @@ module rdma_onic_250mhz #(
   assign diag_cnt_inc[15] = m_axis_adap_tx_250mhz_tvalid[1]
                          && m_axis_adap_tx_250mhz_tready[1]
                          && m_axis_adap_tx_250mhz_tlast[1];
+
+  // -----------------------------------------------------------------------
+  // RX marker trip wire (offset 0x40).  At FIFO ingress, arb_in0 is tagged
+  // with TID=0 (CMAC0 marker) and arb_in1 with TID=1 (CMAC1 marker).  At
+  // arbiter output, the emitted marker is whichever FIFO `grant` selects.
+  // By construction the FIFO doesn't reorder data vs sideband, and the
+  // arbiter mux uses the same `grant` for tdata, tuser_qid, and (now)
+  // marker — so this should always equal `grant`.  Pulse fires on any
+  // beat where it doesn't (catches FIFO data/sideband desync, ECC bit
+  // flip, or any future bug where one CMAC's data ends up tagged with
+  // the other CMAC's qid at the arbiter output).
+  wire emitted_marker         = (grant == 1'b0) ? arb0_in_tid : arb1_in_tid;
+  wire rx_marker_mismatch_pulse = granted_tvalid && out_tready_0
+                              && (emitted_marker != grant);
+
+  assign diag_cnt_inc[16] = rx_marker_mismatch_pulse;
+  assign diag_cnt_inc[17] = tx_qid_changed_pulse;
 
 `else
   // *************************************************************************
@@ -1193,7 +1225,7 @@ module rdma_onic_250mhz #(
 
   // No RX/TX path tap points exist in the passthrough configuration; tie
   // diag CSR counter inputs to zero so the diag CSR remains synthesizable.
-  assign diag_cnt_inc = 16'h0;
+  assign diag_cnt_inc = 18'h0;
 
 `endif
 
