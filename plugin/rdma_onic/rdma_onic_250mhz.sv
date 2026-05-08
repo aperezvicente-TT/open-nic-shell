@@ -757,6 +757,125 @@ module rdma_onic_250mhz #(
   // =======================================================================
   // Note: PER_CMAC_QUEUES is declared above near the TX demux.
 
+  // -----------------------------------------------------------------------
+  // Per-input packet-mode FIFOs (added 2026-05-07 to fix dual-CMAC HoL
+  // block — see project_b7_dual_cmac_block_persists_2026_05_07).  Each
+  // FIFO buffers one whole packet from a single CMAC's non-RoCE path so
+  // the arbiter only sees `tvalid=1` once a complete packet (enq counted
+  // on tlast) is available.  This eliminates the prior failure mode where
+  // arb_locked held grant on a CMAC whose upstream pipe momentarily idled
+  // mid-packet, starving the other CMAC.
+  //
+  // Sizing: 9600B jumbo / 64B beat = 150 entries; depth=512 absorbs one
+  // jumbo + headroom and leaves room for a pipelined frame.  Sideband
+  // (tuser_size/src/ptp_ts) is packed into TUSER (112b) so it stays
+  // paired with its data through the FIFO.  TUSER is held-on-SOP per
+  // packet_adapter_rx.sv:211/237/291 — sampling at SOP is sufficient.
+  // -----------------------------------------------------------------------
+  localparam int ARB_FIFO_DEPTH = 512;
+
+  // CMAC0 input side (post-filter, into arbiter)
+  wire         arb0_in_tvalid;
+  wire         arb0_in_tready;
+  wire [511:0] arb0_in_tdata;
+  wire [63:0]  arb0_in_tkeep;
+  wire         arb0_in_tlast;
+  wire [111:0] arb0_in_tuser;  // {ptp_ts[79:0], src[15:0], size[15:0]}
+
+  // CMAC1 input side
+  wire         arb1_in_tvalid;
+  wire         arb1_in_tready;
+  wire [511:0] arb1_in_tdata;
+  wire [63:0]  arb1_in_tkeep;
+  wire         arb1_in_tlast;
+  wire [111:0] arb1_in_tuser;
+
+  axi_stream_packet_fifo #(
+    .CLOCKING_MODE    ("common_clock"),
+    .FIFO_MEMORY_TYPE ("block"),
+    .FIFO_DEPTH       (ARB_FIFO_DEPTH),
+    .TDATA_WIDTH      (512),
+    .TUSER_WIDTH      (112),
+    .TID_WIDTH        (1),
+    .TDEST_WIDTH      (1),
+    .ECC_MODE         ("no_ecc")
+  ) arb_in0_pkt_fifo (
+    .s_aclk    (axis_aclk),
+    .m_aclk    (axis_aclk),
+    .s_aresetn (axis_aresetn),
+
+    .s_axis_tvalid (flt_host_tvalid),
+    .s_axis_tready (flt_host_tready),
+    .s_axis_tdata  (flt_host_tdata),
+    .s_axis_tkeep  (flt_host_tkeep),
+    .s_axis_tstrb  ({64{1'b1}}),
+    .s_axis_tlast  (flt_host_tlast),
+    .s_axis_tid    (1'b0),
+    .s_axis_tdest  (1'b0),
+    .s_axis_tuser  ({s_axis_adap_rx_250mhz_tuser_ptp_ts[79:0],
+                     s_axis_adap_rx_250mhz_tuser_src[15:0],
+                     s_axis_adap_rx_250mhz_tuser_size[15:0]}),
+
+    .m_axis_tvalid (arb0_in_tvalid),
+    .m_axis_tready (arb0_in_tready),
+    .m_axis_tdata  (arb0_in_tdata),
+    .m_axis_tkeep  (arb0_in_tkeep),
+    .m_axis_tstrb  (),
+    .m_axis_tlast  (arb0_in_tlast),
+    .m_axis_tid    (),
+    .m_axis_tdest  (),
+    .m_axis_tuser  (arb0_in_tuser),
+
+    .injectsbiterr_axis (1'b0), .injectdbiterr_axis (1'b0),
+    .sbiterr_axis (), .dbiterr_axis (),
+    .almost_empty_axis (), .almost_full_axis (),
+    .prog_empty_axis  (), .prog_full_axis  (),
+    .wr_data_count_axis (), .rd_data_count_axis ()
+  );
+
+  axi_stream_packet_fifo #(
+    .CLOCKING_MODE    ("common_clock"),
+    .FIFO_MEMORY_TYPE ("block"),
+    .FIFO_DEPTH       (ARB_FIFO_DEPTH),
+    .TDATA_WIDTH      (512),
+    .TUSER_WIDTH      (112),
+    .TID_WIDTH        (1),
+    .TDEST_WIDTH      (1),
+    .ECC_MODE         ("no_ecc")
+  ) arb_in1_pkt_fifo (
+    .s_aclk    (axis_aclk),
+    .m_aclk    (axis_aclk),
+    .s_aresetn (axis_aresetn),
+
+    .s_axis_tvalid (flt1_host_tvalid),
+    .s_axis_tready (flt1_host_tready),
+    .s_axis_tdata  (flt1_host_tdata),
+    .s_axis_tkeep  (flt1_host_tkeep),
+    .s_axis_tstrb  ({64{1'b1}}),
+    .s_axis_tlast  (flt1_host_tlast),
+    .s_axis_tid    (1'b0),
+    .s_axis_tdest  (1'b0),
+    .s_axis_tuser  ({s_axis_adap_rx_250mhz_tuser_ptp_ts[159:80],
+                     s_axis_adap_rx_250mhz_tuser_src[31:16],
+                     s_axis_adap_rx_250mhz_tuser_size[31:16]}),
+
+    .m_axis_tvalid (arb1_in_tvalid),
+    .m_axis_tready (arb1_in_tready),
+    .m_axis_tdata  (arb1_in_tdata),
+    .m_axis_tkeep  (arb1_in_tkeep),
+    .m_axis_tstrb  (),
+    .m_axis_tlast  (arb1_in_tlast),
+    .m_axis_tid    (),
+    .m_axis_tdest  (),
+    .m_axis_tuser  (arb1_in_tuser),
+
+    .injectsbiterr_axis (1'b0), .injectdbiterr_axis (1'b0),
+    .sbiterr_axis (), .dbiterr_axis (),
+    .almost_empty_axis (), .almost_full_axis (),
+    .prog_empty_axis  (), .prog_full_axis  (),
+    .wr_data_count_axis (), .rd_data_count_axis ()
+  );
+
   reg  arb_locked;
   reg  arb_last;   // last granted source (0 or 1), rotates priority
   wire [1:0] req;
@@ -764,7 +883,7 @@ module rdma_onic_250mhz #(
   wire xfer;
   wire this_beat_tlast;
 
-  assign req = {flt1_host_tvalid, flt_host_tvalid};
+  assign req = {arb1_in_tvalid, arb0_in_tvalid};
 
   // Round-robin grant: when locked, stay on current source.  Otherwise grant
   // to the source that wasn't last served, falling back to whichever has a
@@ -773,10 +892,10 @@ module rdma_onic_250mhz #(
                  (req[1] && (~req[0] || arb_last == 1'b0)) ? 1'b1 : 1'b0;
 
   assign this_beat_tlast = (grant == 1'b0) ?
-                           (flt_host_tvalid  && flt_host_tlast) :
-                           (flt1_host_tvalid && flt1_host_tlast);
+                           (arb0_in_tvalid && arb0_in_tlast) :
+                           (arb1_in_tvalid && arb1_in_tlast);
 
-  wire granted_tvalid = (grant == 1'b0) ? flt_host_tvalid : flt1_host_tvalid;
+  wire granted_tvalid = (grant == 1'b0) ? arb0_in_tvalid : arb1_in_tvalid;
   wire out_tready_0   = m_axis_qdma_c2h_tready[0];
   assign xfer = granted_tvalid && out_tready_0;
 
@@ -795,27 +914,22 @@ module rdma_onic_250mhz #(
   // Slot 0: multiplexed output of the granted source.  tvalid must reflect
   // ONLY the granted source — if the other source has data but the granted
   // source is mid-packet idle, we must not falsely assert valid with the
-  // wrong data muxed out.
+  // wrong data muxed out.  TUSER fields are unpacked from the per-input
+  // FIFO output (packed at FIFO ingress as {ptp_ts[79:0], src[15:0], size[15:0]}).
   assign m_axis_qdma_c2h_tvalid[0]         = granted_tvalid;
-  assign m_axis_qdma_c2h_tdata[511:0]      = (grant == 1'b0) ? flt_host_tdata : flt1_host_tdata;
-  assign m_axis_qdma_c2h_tkeep[63:0]       = (grant == 1'b0) ? flt_host_tkeep : flt1_host_tkeep;
-  assign m_axis_qdma_c2h_tlast[0]          = (grant == 1'b0) ? flt_host_tlast : flt1_host_tlast;
-  assign m_axis_qdma_c2h_tuser_size[15:0]  = (grant == 1'b0) ?
-                                             s_axis_adap_rx_250mhz_tuser_size[15:0] :
-                                             s_axis_adap_rx_250mhz_tuser_size[31:16];
-  assign m_axis_qdma_c2h_tuser_src[15:0]   = (grant == 1'b0) ?
-                                             s_axis_adap_rx_250mhz_tuser_src[15:0] :
-                                             s_axis_adap_rx_250mhz_tuser_src[31:16];
+  assign m_axis_qdma_c2h_tdata[511:0]      = (grant == 1'b0) ? arb0_in_tdata : arb1_in_tdata;
+  assign m_axis_qdma_c2h_tkeep[63:0]       = (grant == 1'b0) ? arb0_in_tkeep : arb1_in_tkeep;
+  assign m_axis_qdma_c2h_tlast[0]          = (grant == 1'b0) ? arb0_in_tlast : arb1_in_tlast;
+  assign m_axis_qdma_c2h_tuser_size[15:0]  = (grant == 1'b0) ? arb0_in_tuser[15:0]   : arb1_in_tuser[15:0];
+  assign m_axis_qdma_c2h_tuser_src[15:0]   = (grant == 1'b0) ? arb0_in_tuser[31:16]  : arb1_in_tuser[31:16];
   assign m_axis_qdma_c2h_tuser_dst[15:0]   = (grant == 1'b0) ? 16'h1 : 16'h2;
-  assign m_axis_qdma_c2h_tuser_ptp_ts[79:0] = (grant == 1'b0) ?
-                                             s_axis_adap_rx_250mhz_tuser_ptp_ts[79:0] :
-                                             s_axis_adap_rx_250mhz_tuser_ptp_ts[159:80];
+  assign m_axis_qdma_c2h_tuser_ptp_ts[79:0] = (grant == 1'b0) ? arb0_in_tuser[111:32] : arb1_in_tuser[111:32];
   // CMAC-encoded absolute qid — consumed by qdma_subsystem when EXT_QID=1
   assign m_axis_qdma_c2h_tuser_qid[10:0]   = (grant == 1'b0) ? 11'd0 : PER_CMAC_QUEUES;
 
-  // Backpressure: ready only to the granted source
-  assign flt_host_tready  = (grant == 1'b0) && out_tready_0;
-  assign flt1_host_tready = (grant == 1'b1) && out_tready_0;
+  // Backpressure: ready only to the granted FIFO output
+  assign arb0_in_tready = (grant == 1'b0) && out_tready_0;
+  assign arb1_in_tready = (grant == 1'b1) && out_tready_0;
 
   // Slot 1 is unused with NUM_PHYS_FUNC=1 — tie off cleanly.
   assign m_axis_qdma_c2h_tvalid[1]            = 1'b0;

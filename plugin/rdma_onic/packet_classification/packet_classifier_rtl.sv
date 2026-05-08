@@ -115,6 +115,13 @@ module packet_classifier_rtl (
   // -------------------------------------------------------------------------
   // Pipeline register stage
   // -------------------------------------------------------------------------
+  // pipe_valid is packet-sticky: once asserted, hold until the FIFO has
+  // consumed the held beat (fifo_wr_en succeeds, i.e. pipe_valid && !fifo_full).
+  // The previous logic deasserted on `!fifo_prog_full` regardless of whether
+  // the beat was actually written, which violated AXI-Stream (tvalid must hold
+  // until the handshake) and caused mid-packet `m_axis_tvalid` bubbles when
+  // upstream had inter-beat gaps — which then deadlocked the C2H arbiter at
+  // rdma_onic_250mhz.sv:831-864 (arb_locked latched on a silent CMAC).
   always_ff @(posedge clk) begin
     if (!rst_n) begin
       pipe_valid   <= 1'b0;
@@ -130,8 +137,8 @@ module packet_classifier_rtl (
       pipe_tlast   <= s_axis_tlast;
       pipe_is_rdma <= sop ? match_rdma : pipe_is_rdma;
       pipe_sop     <= sop;
-    end else if (!fifo_prog_full) begin
-      // If no new data and FIFO can accept, deassert valid
+    end else if (pipe_valid && !fifo_full) begin
+      // Held beat was just written into the FIFO this cycle; clear holding reg
       pipe_valid <= 1'b0;
     end
   end
