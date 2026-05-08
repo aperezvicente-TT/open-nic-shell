@@ -292,12 +292,17 @@ module rdma_onic_250mhz #(
   assign axis_aresetn = axis_rst_sync[2];
 
   // =========================================================================
-  // AXI-Lite register slave (passthrough for NUM_QDMA <= 1)
+  // AXI-Lite register slave: diagnostic CSR with hop counters (NUM_QDMA<=1)
   // =========================================================================
+  // Forward-declared net for the diag CSR's increment pulses; wired up after
+  // the RX/TX path signals are defined further below in this module.  The
+  // wire is sized to the module's NUM_COUNTERS.
+  wire [15:0] diag_cnt_inc;
+
   generate if (NUM_QDMA <= 1) begin
-    axi_lite_slave #(
-      .REG_ADDR_W (12),
-      .REG_PREFIX (16'hB000)
+    rdma_diag_csr #(
+      .REG_ADDR_W   (12),
+      .NUM_COUNTERS (16)
     ) reg_inst (
       .s_axil_awvalid (s_axil_awvalid),
       .s_axil_awaddr  (s_axil_awaddr),
@@ -317,7 +322,10 @@ module rdma_onic_250mhz #(
       .s_axil_rready  (s_axil_rready),
 
       .aclk           (axil_aclk),
-      .aresetn        (axil_aresetn)
+      .aresetn        (axil_aresetn),
+      .dp_aclk        (axis_aclk),
+      .dp_aresetn     (axis_aresetn),
+      .cnt_inc        (diag_cnt_inc)
     );
   end
   endgenerate
@@ -945,6 +953,60 @@ module rdma_onic_250mhz #(
   // CMAC1 TX is driven by the per-CMAC TX arbiter declared earlier in the
   // H2C → CMAC TX section.  See gen_tx_arb generate block for cmac==1.
 
+  // -----------------------------------------------------------------------
+  // Diagnostic hop-counter tap pulses (consumed by rdma_diag_csr above).
+  // Each pulse is asserted for one axis_aclk cycle on the tlast beat that
+  // successfully transfers (tvalid && tready && tlast).  See the counter
+  // map header in rdma_diag_csr.sv for the bisect rule.
+  // -----------------------------------------------------------------------
+  // CMAC0 RX path (offsets 0x00..0x14)
+  assign diag_cnt_inc[0]  = s_axis_adap_rx_250mhz_tvalid[0]
+                         && s_axis_adap_rx_250mhz_tready[0]
+                         && s_axis_adap_rx_250mhz_tlast[0];
+  assign diag_cnt_inc[1]  = clf_out_tvalid  && clf_out_tready  && clf_out_tlast;
+  assign diag_cnt_inc[2]  = flt_rdma_tvalid && flt_rdma_tready && flt_rdma_tlast;
+  assign diag_cnt_inc[3]  = flt_host_tvalid && flt_host_tready && flt_host_tlast;
+  assign diag_cnt_inc[4]  = arb0_in_tvalid  && arb0_in_tready  && arb0_in_tlast;
+  assign diag_cnt_inc[5]  = m_axis_qdma_c2h_tvalid[0]
+                         && m_axis_qdma_c2h_tready[0]
+                         && m_axis_qdma_c2h_tlast[0]
+                         && (grant == 1'b0);
+
+  // CMAC1 RX path (offsets 0x18..0x2C)
+  assign diag_cnt_inc[6]  = s_axis_adap_rx_250mhz_tvalid[1]
+                         && s_axis_adap_rx_250mhz_tready[1]
+                         && s_axis_adap_rx_250mhz_tlast[1];
+  assign diag_cnt_inc[7]  = clf1_out_tvalid  && clf1_out_tready  && clf1_out_tlast;
+  assign diag_cnt_inc[8]  = flt1_rdma_tvalid && flt1_rdma_tready && flt1_rdma_tlast;
+  assign diag_cnt_inc[9]  = flt1_host_tvalid && flt1_host_tready && flt1_host_tlast;
+  assign diag_cnt_inc[10] = arb1_in_tvalid   && arb1_in_tready   && arb1_in_tlast;
+  assign diag_cnt_inc[11] = m_axis_qdma_c2h_tvalid[0]
+                         && m_axis_qdma_c2h_tready[0]
+                         && m_axis_qdma_c2h_tlast[0]
+                         && (grant == 1'b1);
+
+  // TX path (offsets 0x30..0x3C).  H2C demux taps measure how the host
+  // TX stream is split per CMAC; adapter-out taps measure what reaches
+  // the CMAC TX adapter post per-CMAC arbiter.  Discrepancy between
+  // h2c_demux[cmac] and adap_out[cmac] localizes the loss to the per-
+  // CMAC arbiter or the adapter's CDC FIFO; discrepancy between adap_out
+  // and the CMAC's own stat_tx_total_pkts localizes it to the 250→322
+  // CDC or the CMAC IP itself.
+  assign diag_cnt_inc[12] = s_axis_qdma_h2c_tvalid[0]
+                         && s_axis_qdma_h2c_tready[0]
+                         && s_axis_qdma_h2c_tlast[0]
+                         && (h2c_cur_sel == 1'b0);
+  assign diag_cnt_inc[13] = s_axis_qdma_h2c_tvalid[0]
+                         && s_axis_qdma_h2c_tready[0]
+                         && s_axis_qdma_h2c_tlast[0]
+                         && (h2c_cur_sel == 1'b1);
+  assign diag_cnt_inc[14] = m_axis_adap_tx_250mhz_tvalid[0]
+                         && m_axis_adap_tx_250mhz_tready[0]
+                         && m_axis_adap_tx_250mhz_tlast[0];
+  assign diag_cnt_inc[15] = m_axis_adap_tx_250mhz_tvalid[1]
+                         && m_axis_adap_tx_250mhz_tready[1]
+                         && m_axis_adap_tx_250mhz_tlast[1];
+
 `else
   // *************************************************************************
   // NON-RDMA PASSTHROUGH (original p2p behavior)
@@ -1128,6 +1190,10 @@ module rdma_onic_250mhz #(
     end
   end
   endgenerate
+
+  // No RX/TX path tap points exist in the passthrough configuration; tie
+  // diag CSR counter inputs to zero so the diag CSR remains synthesizable.
+  assign diag_cnt_inc = 16'h0;
 
 `endif
 

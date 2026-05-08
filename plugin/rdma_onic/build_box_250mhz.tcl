@@ -19,6 +19,7 @@ if {$num_qdma > 1} {
     source box_250mhz/box_250mhz_axis_switch.tcl
 }
 read_verilog -quiet -sv rdma_onic_250mhz.sv
+read_verilog -quiet -sv rdma_diag_csr.sv
 read_verilog -quiet -sv packet_classification/packet_classifier_rtl.sv
 read_verilog -quiet -sv packet_classification/packet_filter.sv
 read_verilog -quiet -sv rn_reg_control.sv
