@@ -789,36 +789,51 @@ module rdma_onic_250mhz #(
   //
   // Sizing: 9600B jumbo / 64B beat = 150 entries; depth=512 absorbs one
   // jumbo + headroom and leaves room for a pipelined frame.  Sideband
-  // (tuser_size/src/ptp_ts) is packed into TUSER (112b) so it stays
-  // paired with its data through the FIFO.  TUSER is held-on-SOP per
+  // (qid/ptp_ts/src/size) is packed into TUSER (123b) so it stays paired
+  // with its data through the FIFO RAM.  TUSER is held-on-SOP per
   // packet_adapter_rx.sv:211/237/291 — sampling at SOP is sufficient.
+  //
+  // Bit layout (LSB first): {qid[10:0], ptp_ts[79:0], src[15:0], size[15:0]}
+  //   [ 15:  0] size   ← from CMAC RX adapter
+  //   [ 31: 16] src    ← from CMAC RX adapter
+  //   [111: 32] ptp_ts ← from CMAC RX adapter (80b IEEE 1588)
+  //   [122:112] qid    ← CONSTANT per side (0 for CMAC0, PER_CMAC_QUEUES
+  //                     for CMAC1).  Packed at FIFO ingress so the qid
+  //                     value rides through the same BRAM cells as the
+  //                     data beat that produced it — the output mux pulls
+  //                     qid from arb*_in_tuser instead of a separate
+  //                     `(grant==0)?const0:const1` net, eliminating any
+  //                     possibility of data/qid skew at the QDMA boundary
+  //                     (root cause of the dual-CMAC qid-misroute,
+  //                     project_b7_dual_cmac_qid_misroute_2026_05_08_pm.md).
   // -----------------------------------------------------------------------
   localparam int ARB_FIFO_DEPTH = 512;
+  localparam int ARB_TUSER_W    = 123;  // {qid[10:0], ptp_ts[79:0], src[15:0], size[15:0]}
 
   // CMAC0 input side (post-filter, into arbiter)
-  wire         arb0_in_tvalid;
-  wire         arb0_in_tready;
-  wire [511:0] arb0_in_tdata;
-  wire [63:0]  arb0_in_tkeep;
-  wire         arb0_in_tlast;
-  wire [111:0] arb0_in_tuser;  // {ptp_ts[79:0], src[15:0], size[15:0]}
-  wire         arb0_in_tid;    // CMAC marker (set 0 at FIFO ingress, see below)
+  wire                       arb0_in_tvalid;
+  wire                       arb0_in_tready;
+  wire [511:0]               arb0_in_tdata;
+  wire [63:0]                arb0_in_tkeep;
+  wire                       arb0_in_tlast;
+  wire [ARB_TUSER_W-1:0]     arb0_in_tuser;  // see bit layout above
+  wire                       arb0_in_tid;    // CMAC marker (set 0 at FIFO ingress)
 
   // CMAC1 input side
-  wire         arb1_in_tvalid;
-  wire         arb1_in_tready;
-  wire [511:0] arb1_in_tdata;
-  wire [63:0]  arb1_in_tkeep;
-  wire         arb1_in_tlast;
-  wire [111:0] arb1_in_tuser;
-  wire         arb1_in_tid;    // CMAC marker (set 1 at FIFO ingress)
+  wire                       arb1_in_tvalid;
+  wire                       arb1_in_tready;
+  wire [511:0]               arb1_in_tdata;
+  wire [63:0]                arb1_in_tkeep;
+  wire                       arb1_in_tlast;
+  wire [ARB_TUSER_W-1:0]     arb1_in_tuser;
+  wire                       arb1_in_tid;    // CMAC marker (set 1 at FIFO ingress)
 
   axi_stream_packet_fifo #(
     .CLOCKING_MODE    ("common_clock"),
     .FIFO_MEMORY_TYPE ("block"),
     .FIFO_DEPTH       (ARB_FIFO_DEPTH),
     .TDATA_WIDTH      (512),
-    .TUSER_WIDTH      (112),
+    .TUSER_WIDTH      (ARB_TUSER_W),
     .TID_WIDTH        (1),
     .TDEST_WIDTH      (1),
     .ECC_MODE         ("no_ecc")
@@ -835,7 +850,9 @@ module rdma_onic_250mhz #(
     .s_axis_tlast  (flt_host_tlast),
     .s_axis_tid    (1'b0),                   // CMAC0 marker: 0
     .s_axis_tdest  (1'b0),
-    .s_axis_tuser  ({s_axis_adap_rx_250mhz_tuser_ptp_ts[79:0],
+    // CMAC0 qid is fixed at 0 (driver maps qid 0..PER_CMAC_QUEUES-1 → enp1s0).
+    .s_axis_tuser  ({11'd0,                                            // qid
+                     s_axis_adap_rx_250mhz_tuser_ptp_ts[79:0],
                      s_axis_adap_rx_250mhz_tuser_src[15:0],
                      s_axis_adap_rx_250mhz_tuser_size[15:0]}),
 
@@ -861,7 +878,7 @@ module rdma_onic_250mhz #(
     .FIFO_MEMORY_TYPE ("block"),
     .FIFO_DEPTH       (ARB_FIFO_DEPTH),
     .TDATA_WIDTH      (512),
-    .TUSER_WIDTH      (112),
+    .TUSER_WIDTH      (ARB_TUSER_W),
     .TID_WIDTH        (1),
     .TDEST_WIDTH      (1),
     .ECC_MODE         ("no_ecc")
@@ -878,7 +895,9 @@ module rdma_onic_250mhz #(
     .s_axis_tlast  (flt1_host_tlast),
     .s_axis_tid    (1'b1),                   // CMAC1 marker: 1
     .s_axis_tdest  (1'b0),
-    .s_axis_tuser  ({s_axis_adap_rx_250mhz_tuser_ptp_ts[159:80],
+    // CMAC1 qid is fixed at PER_CMAC_QUEUES (driver maps qid PER_CMAC_QUEUES..2*PER_CMAC_QUEUES-1 → enp1s0d1).
+    .s_axis_tuser  ({PER_CMAC_QUEUES[10:0],                            // qid
+                     s_axis_adap_rx_250mhz_tuser_ptp_ts[159:80],
                      s_axis_adap_rx_250mhz_tuser_src[31:16],
                      s_axis_adap_rx_250mhz_tuser_size[31:16]}),
 
@@ -938,17 +957,24 @@ module rdma_onic_250mhz #(
   // ONLY the granted source — if the other source has data but the granted
   // source is mid-packet idle, we must not falsely assert valid with the
   // wrong data muxed out.  TUSER fields are unpacked from the per-input
-  // FIFO output (packed at FIFO ingress as {ptp_ts[79:0], src[15:0], size[15:0]}).
-  assign m_axis_qdma_c2h_tvalid[0]         = granted_tvalid;
-  assign m_axis_qdma_c2h_tdata[511:0]      = (grant == 1'b0) ? arb0_in_tdata : arb1_in_tdata;
-  assign m_axis_qdma_c2h_tkeep[63:0]       = (grant == 1'b0) ? arb0_in_tkeep : arb1_in_tkeep;
-  assign m_axis_qdma_c2h_tlast[0]          = (grant == 1'b0) ? arb0_in_tlast : arb1_in_tlast;
-  assign m_axis_qdma_c2h_tuser_size[15:0]  = (grant == 1'b0) ? arb0_in_tuser[15:0]   : arb1_in_tuser[15:0];
-  assign m_axis_qdma_c2h_tuser_src[15:0]   = (grant == 1'b0) ? arb0_in_tuser[31:16]  : arb1_in_tuser[31:16];
-  assign m_axis_qdma_c2h_tuser_dst[15:0]   = (grant == 1'b0) ? 16'h1 : 16'h2;
-  assign m_axis_qdma_c2h_tuser_ptp_ts[79:0] = (grant == 1'b0) ? arb0_in_tuser[111:32] : arb1_in_tuser[111:32];
-  // CMAC-encoded absolute qid — consumed by qdma_subsystem when EXT_QID=1
-  assign m_axis_qdma_c2h_tuser_qid[10:0]   = (grant == 1'b0) ? 11'd0 : PER_CMAC_QUEUES;
+  // FIFO output (packed at FIFO ingress as
+  //   {qid[10:0], ptp_ts[79:0], src[15:0], size[15:0]}).
+  // qid is sourced from the FIFO's TUSER — NOT a separate `grant`-keyed
+  // constant — so the CMAC-identity bits ride through the same BRAM cells
+  // as the data they describe.  See ARB_TUSER_W comment block above for
+  // why this matters (project_b7_dual_cmac_qid_misroute_2026_05_08_pm.md).
+  assign m_axis_qdma_c2h_tvalid[0]          = granted_tvalid;
+  assign m_axis_qdma_c2h_tdata[511:0]       = (grant == 1'b0) ? arb0_in_tdata : arb1_in_tdata;
+  assign m_axis_qdma_c2h_tkeep[63:0]        = (grant == 1'b0) ? arb0_in_tkeep : arb1_in_tkeep;
+  assign m_axis_qdma_c2h_tlast[0]           = (grant == 1'b0) ? arb0_in_tlast : arb1_in_tlast;
+  assign m_axis_qdma_c2h_tuser_size[15:0]   = (grant == 1'b0) ? arb0_in_tuser[ 15:  0] : arb1_in_tuser[ 15:  0];
+  assign m_axis_qdma_c2h_tuser_src[15:0]    = (grant == 1'b0) ? arb0_in_tuser[ 31: 16] : arb1_in_tuser[ 31: 16];
+  assign m_axis_qdma_c2h_tuser_dst[15:0]    = (grant == 1'b0) ? 16'h1 : 16'h2;
+  assign m_axis_qdma_c2h_tuser_ptp_ts[79:0] = (grant == 1'b0) ? arb0_in_tuser[111: 32] : arb1_in_tuser[111: 32];
+  // CMAC-encoded absolute qid — consumed by qdma_subsystem when EXT_QID=1.
+  // Sourced from the same FIFO TUSER as the data beat, NOT a separate
+  // const mux on `grant`.
+  assign m_axis_qdma_c2h_tuser_qid[10:0]    = (grant == 1'b0) ? arb0_in_tuser[122:112] : arb1_in_tuser[122:112];
 
   // Backpressure: ready only to the granted FIFO output
   assign arb0_in_tready = (grant == 1'b0) && out_tready_0;

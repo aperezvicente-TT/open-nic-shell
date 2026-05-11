@@ -120,6 +120,7 @@ module qdma_subsystem_function #(
   wire  [511:0] axis_c2h_tdata;
   wire          axis_c2h_tlast;
   wire   [15:0] axis_c2h_tuser_size;
+  wire   [10:0] axis_c2h_tuser_qid;       // v5.2.10: post-slice qid (byte-locked to data)
   wire          axis_c2h_tready;
 
   wire          hash_result_valid;
@@ -136,6 +137,7 @@ module qdma_subsystem_function #(
   wire  [511:0] axis_c2h_buf_tdata;
   wire          axis_c2h_buf_tlast;
   wire   [15:0] axis_c2h_buf_tuser_size;
+  wire   [10:0] axis_c2h_buf_tuser_qid;   // v5.2.10: post-buf_fifo qid (byte-locked)
   wire          axis_c2h_buf_tready;
 
   // PTP timestamp sideband FIFO signals
@@ -344,14 +346,17 @@ module qdma_subsystem_function #(
   wire [79:0] axis_c2h_tuser_ptp_ts;
 
   generate if (QDMA_ID == 0) begin
-    // TUSER 96 bits: {ptp_ts[79:0], size[15:0]}.  Qid crosses the slice via
-    // a separate ordered FIFO, keyed on the tlast handshake.
-    wire [95:0] c2h_slice_tuser_in  = {s_axis_c2h_tuser_ptp_ts, s_axis_c2h_tuser_size};
-    wire [95:0] c2h_slice_tuser_out;
+    // v5.2.10: TUSER 107 bits: {qid[10:0], ptp_ts[79:0], size[15:0]}.
+    // qid travels in lockstep with data through the slice — no separate FIFO,
+    // so no first-beat-vs-tlast pipelining race (root cause of v5.2.9 misroute).
+    wire [106:0] c2h_slice_tuser_in  = {s_axis_c2h_tuser_qid,
+                                        s_axis_c2h_tuser_ptp_ts,
+                                        s_axis_c2h_tuser_size};
+    wire [106:0] c2h_slice_tuser_out;
 
     axi_stream_register_slice #(
       .TDATA_W (512),
-      .TUSER_W (96),
+      .TUSER_W (107),
       .MODE    ("full")
     ) c2h_slice_inst (
       .s_axis_tvalid    (s_axis_c2h_tvalid),
@@ -378,8 +383,19 @@ module qdma_subsystem_function #(
 
     assign axis_c2h_tuser_size   = c2h_slice_tuser_out[15:0];
     assign axis_c2h_tuser_ptp_ts = c2h_slice_tuser_out[95:16];
+    assign axis_c2h_tuser_qid    = c2h_slice_tuser_out[106:96];
   end
   else begin
+    // v5.2.10: clk_converter must carry widened TUSER (qid + ptp_ts + size).
+    // NOTE: re-customize qdma_subsystem_clk_converter IP to TUSER_WIDTH=107
+    //       (was 16) before building any QDMA_ID != 0 target (xup_vv8 etc.).
+    //       au200 single-QDMA build uses QDMA_ID == 0 path above and is
+    //       unaffected by this comment.
+    wire [106:0] c2h_cc_tuser_in  = {s_axis_c2h_tuser_qid,
+                                     s_axis_c2h_tuser_ptp_ts,
+                                     s_axis_c2h_tuser_size};
+    wire [106:0] c2h_cc_tuser_out;
+
     qdma_subsystem_clk_converter c2h_axis_inst(
       .s_axis_aresetn (axil_aresetn),
       .m_axis_aresetn (axil_aresetn),
@@ -389,26 +405,19 @@ module qdma_subsystem_function #(
       .s_axis_tdata   (s_axis_c2h_tdata),
       .s_axis_tkeep   ({64{1'b1}}),
       .s_axis_tlast   (s_axis_c2h_tlast),
-      .s_axis_tuser   (s_axis_c2h_tuser_size),
+      .s_axis_tuser   (c2h_cc_tuser_in),
       .m_axis_aclk    (axis_aclk),
       .m_axis_tvalid  (axis_c2h_tvalid),
       .m_axis_tready  (axis_c2h_tready),
       .m_axis_tdata   (axis_c2h_tdata),
       .m_axis_tkeep   (),
       .m_axis_tlast   (axis_c2h_tlast),
-      .m_axis_tuser   (axis_c2h_tuser_size)
+      .m_axis_tuser   (c2h_cc_tuser_out)
     );
 
-    // PTP stable within a packet; latch on every valid beat so it's current
-    // at output tlast.
-    reg [79:0] ptp_ts_cc_latched;
-    always @(posedge axis_aclk) begin
-      if (~axil_aresetn)
-        ptp_ts_cc_latched <= 80'd0;
-      else if (axis_c2h_tvalid && axis_c2h_tready)
-        ptp_ts_cc_latched <= s_axis_c2h_tuser_ptp_ts;
-    end
-    assign axis_c2h_tuser_ptp_ts = ptp_ts_cc_latched;
+    assign axis_c2h_tuser_size   = c2h_cc_tuser_out[15:0];
+    assign axis_c2h_tuser_ptp_ts = c2h_cc_tuser_out[95:16];
+    assign axis_c2h_tuser_qid    = c2h_cc_tuser_out[106:96];
   end
   endgenerate
 
@@ -432,53 +441,40 @@ module qdma_subsystem_function #(
   //   EXT_QID=0 (default, legacy RSS):
   //     Compute Toeplitz hash over packet headers, look up a virtual queue
   //     ID in the RSS indirection table, add q_base to get absolute qid.
-  //     FIFO write triggered by hash_result_valid (once per packet).
+  //     qid_fifo write triggered by hash_result_valid (once per packet).
+  //     Read on output tlast.  This path is unchanged from v5.2.9.
   //
-  //   EXT_QID=1 (Path γ external qid):
-  //     Absolute qid is supplied upstream via s_axis_c2h_tuser_qid — the
-  //     plugin encodes CMAC identity into qid before the stream reaches
-  //     this module.  Capture qid on the PRE-slice tlast handshake (the
-  //     producer holds tuser_qid stable for the packet, so at tlast time
-  //     the value is still the packet's qid).  The FIFO preserves packet
-  //     order; the output side reads on POST-slice tlast.  Keeping the
-  //     capture pre-slice means the main c2h slice's TUSER can stay narrow,
-  //     which relieves significant 250 MHz-domain congestion around the
-  //     QDMA PCIe IP.
-  //
-  // Either way the FIFO is realigned to the first beat of the output stream
-  // by the consumer (qid_fifo_rd_en).
+  //   EXT_QID=1 (Path γ external qid) — REWRITTEN IN v5.2.10:
+  //     Absolute qid is supplied upstream via s_axis_c2h_tuser_qid.  In v5.2.10
+  //     the qid travels through the c2h_slice + buf_fifo TUSER alongside the
+  //     data — eliminating the qid_fifo's first-beat-vs-tlast pipelining
+  //     asymmetry that caused ~14% misroute under dual-CMAC traffic
+  //     (project_b7_dual_cmac_qid_misroute_2026_05_08_pm.md).  qid_fifo is
+  //     not instantiated in this build path.
 
-  // Track whether we're inside an input packet so we can detect first beats.
-  reg s_c2h_in_pkt;
-  always @(posedge axis_aclk) begin
-    if (~axil_aresetn) s_c2h_in_pkt <= 1'b0;
-    else if (s_axis_c2h_tvalid && s_axis_c2h_tready) begin
-      if (s_axis_c2h_tlast) s_c2h_in_pkt <= 1'b0;
-      else                   s_c2h_in_pkt <= 1'b1;
+  generate if (EXT_QID == 1) begin : gen_ext_qid_passthru
+    // No qid_fifo logic — qid rides in slice TUSER (axis_c2h_tuser_qid →
+    // axis_c2h_buf_tuser_qid → m_axis_c2h_tuser_qid).  Tie off the unused
+    // module-level reg/wire so they aren't left dangling.
+    always @* begin
+      qid_fifo_wr_en = 1'b0;
+      qid_fifo_din   = 11'd0;
     end
-  end
-  wire s_c2h_first_beat = s_axis_c2h_tvalid && s_axis_c2h_tready && ~s_c2h_in_pkt;
-
-  generate if (EXT_QID == 1) begin : gen_ext_qid
-    always @(posedge axis_aclk) begin
-      if (~axil_aresetn) begin
-        qid_fifo_wr_en <= 1'b0;
-        qid_fifo_din   <= 11'd0;
-      end
-      // Write on the PRE-slice FIRST BEAT of each packet so the FIFO is
-      // populated by the time the slice emits that packet's first output
-      // beat.  Writing on tlast would leave the first packet's output
-      // beats 1..N-1 reading an empty FIFO (dout=0, wrong qid).
-      else if (s_c2h_first_beat) begin
-        qid_fifo_wr_en <= 1'b1;
-        qid_fifo_din   <= s_axis_c2h_tuser_qid;
-      end
-      else begin
-        qid_fifo_wr_en <= 1'b0;
-      end
-    end
+    assign qid_fifo_rd_en = 1'b0;
   end
   else begin : gen_rss_qid
+    // RSS path (EXT_QID=0): unchanged hash → indir_table → qid_fifo flow.
+    // s_c2h_in_pkt + s_c2h_first_beat declared inside this generate so they
+    // don't leak into the EXT_QID=1 path (where they're unused).
+    reg s_c2h_in_pkt_r;
+    always @(posedge axis_aclk) begin
+      if (~axil_aresetn) s_c2h_in_pkt_r <= 1'b0;
+      else if (s_axis_c2h_tvalid && s_axis_c2h_tready) begin
+        if (s_axis_c2h_tlast) s_c2h_in_pkt_r <= 1'b0;
+        else                  s_c2h_in_pkt_r <= 1'b1;
+      end
+    end
+
     always @(posedge axis_aclk) begin
       if (~axil_aresetn) begin
         qid_fifo_wr_en <= 1'b0;
@@ -492,59 +488,70 @@ module qdma_subsystem_function #(
         qid_fifo_wr_en <= 1'b0;
       end
     end
+    assign qid_fifo_rd_en = m_axis_c2h_tvalid && m_axis_c2h_tlast && m_axis_c2h_tready;
   end
   endgenerate
 
-  assign qid_fifo_rd_en = m_axis_c2h_tvalid && m_axis_c2h_tlast && m_axis_c2h_tready;
+  // qid_fifo only instantiated for EXT_QID=0 (RSS).  EXT_QID=1 omits it
+  // entirely; the unused FIFO output wires are tied off below.
+  generate if (EXT_QID == 0) begin : gen_qid_fifo_inst
+    xpm_fifo_sync #(
+      .DOUT_RESET_VALUE    ("0"),
+      .ECC_MODE            ("no_ecc"),
+      .FIFO_MEMORY_TYPE    ("auto"),
+      .FIFO_WRITE_DEPTH    (C_QID_FIFO_DEPTH),
+      .READ_DATA_WIDTH     (11),
+      .READ_MODE           ("fwft"),
+      .WRITE_DATA_WIDTH    (11)
+    ) qid_fifo_inst (
+      .wr_en         (qid_fifo_wr_en),
+      .din           (qid_fifo_din),
+      .wr_ack        (),
+      .rd_en         (qid_fifo_rd_en),
+      .data_valid    (),
+      .dout          (qid_fifo_dout),
 
-  xpm_fifo_sync #(
-    .DOUT_RESET_VALUE    ("0"),
-    .ECC_MODE            ("no_ecc"),
-    .FIFO_MEMORY_TYPE    ("auto"),
-    .FIFO_WRITE_DEPTH    (C_QID_FIFO_DEPTH),
-    .READ_DATA_WIDTH     (11),
-    .READ_MODE           ("fwft"),
-    .WRITE_DATA_WIDTH    (11)
-  ) qid_fifo_inst (
-    .wr_en         (qid_fifo_wr_en),
-    .din           (qid_fifo_din),
-    .wr_ack        (),
-    .rd_en         (qid_fifo_rd_en),
-    .data_valid    (),
-    .dout          (qid_fifo_dout),
+      .wr_data_count (),
+      .rd_data_count (),
 
-    .wr_data_count (),
-    .rd_data_count (),
+      .empty         (qid_fifo_empty),
+      .full          (qid_fifo_full),
+      .almost_empty  (),
+      .almost_full   (),
+      .overflow      (),
+      .underflow     (),
+      .prog_empty    (),
+      .prog_full     (),
+      .sleep         (1'b0),
 
-    .empty         (qid_fifo_empty),
-    .full          (qid_fifo_full),
-    .almost_empty  (),
-    .almost_full   (),
-    .overflow      (),
-    .underflow     (),
-    .prog_empty    (),
-    .prog_full     (),
-    .sleep         (1'b0),
+      .sbiterr       (),
+      .dbiterr       (),
+      .injectsbiterr (1'b0),
+      .injectdbiterr (1'b0),
 
-    .sbiterr       (),
-    .dbiterr       (),
-    .injectsbiterr (1'b0),
-    .injectdbiterr (1'b0),
+      .wr_clk        (axis_aclk),
+      .rst           (~axil_aresetn),
+      .rd_rst_busy   (),
+      .wr_rst_busy   ()
+    );
+  end
+  else begin : gen_qid_fifo_tieoff
+    // EXT_QID=1: qid_fifo is unused.  Tie off unused outputs.
+    assign qid_fifo_dout  = 11'd0;
+    assign qid_fifo_empty = 1'b0;   // never empty → never gates m_axis_c2h_tvalid
+    assign qid_fifo_full  = 1'b0;
+  end
+  endgenerate
 
-    .wr_clk        (axis_aclk),
-    .rst           (~axil_aresetn),
-    .rd_rst_busy   (),
-    .wr_rst_busy   ()
-  );
-
-  // Buffer the input stream until queue ID is computed
+  // Buffer the input stream until queue ID is computed.
+  // v5.2.10: TUSER widened 16→27 to carry {qid, size} byte-locked to data.
   xpm_fifo_axis #(
     .CLOCKING_MODE    ("common_clock"),
     .FIFO_MEMORY_TYPE ("auto"),
     .PACKET_FIFO      ("false"),
     .FIFO_DEPTH       (C_PKT_FIFO_DEPTH),
     .TDATA_WIDTH      (512),
-    .TUSER_WIDTH      (16),
+    .TUSER_WIDTH      (27),                 // {qid[10:0], size[15:0]}
     .ECC_MODE         ("no_ecc")
   ) buf_fifo_inst (
     .s_axis_tvalid      (axis_c2h_tvalid),
@@ -552,7 +559,7 @@ module qdma_subsystem_function #(
     .s_axis_tkeep       ({64{1'b1}}),
     .s_axis_tstrb       ({64{1'b1}}),
     .s_axis_tlast       (axis_c2h_tlast),
-    .s_axis_tuser       (axis_c2h_tuser_size),
+    .s_axis_tuser       ({axis_c2h_tuser_qid, axis_c2h_tuser_size}),
     .s_axis_tid         (0),
     .s_axis_tdest       (0),
     .s_axis_tready      (axis_c2h_tready),
@@ -562,7 +569,7 @@ module qdma_subsystem_function #(
     .m_axis_tkeep       (),
     .m_axis_tstrb       (),
     .m_axis_tlast       (axis_c2h_buf_tlast),
-    .m_axis_tuser       (axis_c2h_buf_tuser_size),
+    .m_axis_tuser       ({axis_c2h_buf_tuser_qid, axis_c2h_buf_tuser_size}),
     .m_axis_tid         (),
     .m_axis_tdest       (),
     .m_axis_tready      (axis_c2h_buf_tready),
@@ -649,11 +656,17 @@ module qdma_subsystem_function #(
     .wr_rst_busy   ()
   );
 
+  // v5.2.10: EXT_QID=1 → qid is in buf_fifo TUSER, no qid_fifo gating needed.
+  //          EXT_QID=0 → qid is in qid_fifo, gate output until FIFO has data.
+  // qid_fifo_empty is tied to 1'b0 in the EXT_QID=1 generate (gen_qid_fifo_tieoff)
+  // so the && ~qid_fifo_empty term collapses to ~0 = 1.  Synthesizer optimizes it
+  // out for EXT_QID=1 builds, with no behavioral cost.
   assign m_axis_c2h_tvalid      = axis_c2h_buf_tvalid && ~qid_fifo_empty;
   assign m_axis_c2h_tdata       = axis_c2h_buf_tdata;
   assign m_axis_c2h_tlast       = axis_c2h_buf_tlast;
   assign m_axis_c2h_tuser_size  = axis_c2h_buf_tuser_size;
-  assign m_axis_c2h_tuser_qid   = qid_fifo_dout;
+  assign m_axis_c2h_tuser_qid   = (EXT_QID == 1) ? axis_c2h_buf_tuser_qid
+                                                 : qid_fifo_dout;
   assign m_axis_c2h_tuser_ptp_ts = ptp_ts_fifo_dout;
   assign axis_c2h_buf_tready    = m_axis_c2h_tready && ~qid_fifo_empty;
 
