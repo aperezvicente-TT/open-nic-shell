@@ -26,6 +26,16 @@ assign m_axis_qdma_c2h_tuser_ptp_ts = '0;
 // PTP tag on TX: tie off (no timestamping in bridge)
 assign m_axis_adap_tx_250mhz_tuser_ptp_tag = '0;
 
+// tuser_dst must have bit (CMAC_ID + 6) set for the packet to pass
+// packet_adapter_tx.sv:116 (`bad_dst` filter); otherwise the adapter
+// silently drops every frame.  CMAC0 needs bit 6 = 0x0040, CMAC1 needs
+// bit 7 = 0x0080.  Without these the bridge encap output never reaches
+// the wire even though stat_tx_frames in tt_link_regs.sv keeps counting.
+// tuser_src is unused on TX; leave at 0.
+assign m_axis_adap_tx_250mhz_tuser_dst[15:0]  = 16'h0040;
+assign m_axis_adap_tx_250mhz_tuser_dst[31:16] = 16'h0080;
+assign m_axis_adap_tx_250mhz_tuser_src        = '0;
+
 tt_link_udp_bridge_250mhz #(
   .NUM_CMAC_PORT (NUM_CMAC_PORT)
 ) tt_link_udp_bridge_inst (

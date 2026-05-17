@@ -18,16 +18,16 @@
 module tt_link_regs (
   input  wire         s_axil_awvalid,
   input  wire  [31:0] s_axil_awaddr,
-  output reg          s_axil_awready,
+  output wire         s_axil_awready,
   input  wire         s_axil_wvalid,
   input  wire  [31:0] s_axil_wdata,
-  output reg          s_axil_wready,
+  output wire         s_axil_wready,
   output reg          s_axil_bvalid,
   output wire   [1:0] s_axil_bresp,
   input  wire         s_axil_bready,
   input  wire         s_axil_arvalid,
   input  wire  [31:0] s_axil_araddr,
-  output reg          s_axil_arready,
+  output wire         s_axil_arready,
   output reg          s_axil_rvalid,
   output reg   [31:0] s_axil_rdata,
   output wire   [1:0] s_axil_rresp,
@@ -70,12 +70,20 @@ module tt_link_regs (
   // Read address latch
   reg [31:0] rd_addr_r;
 
+  // AXI-Lite ready backpressure (AXI4 §A3.3): never accept a new beat while a
+  // prior transaction is still in flight. Earlier versions hard-wired
+  // *_awready / *_wready / *_arready to 1, so pipelined PCIe BAR writes could
+  // overwrite wr_addr_r mid-flight; the QDMA bridge then escalated the busted
+  // handshake as a PCIe Completer Abort, taking the host kernel down via AER.
+  // Accept AW only when no write is mid-flight; accept W only after AW was
+  // captured; accept AR only when no read response is queued.
+  assign s_axil_awready = !wr_pending && !s_axil_bvalid;
+  assign s_axil_wready  =  wr_pending && !s_axil_bvalid;
+  assign s_axil_arready = !s_axil_rvalid;
+
   always_ff @(posedge aclk) begin
     if (!rst_n) begin
-      s_axil_awready <= 1'b1;
-      s_axil_wready  <= 1'b1;
       s_axil_bvalid  <= 1'b0;
-      s_axil_arready <= 1'b1;
       s_axil_rvalid  <= 1'b0;
       s_axil_rdata   <= '0;
       wr_pending     <= 1'b0;
