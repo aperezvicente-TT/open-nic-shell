@@ -49,7 +49,11 @@ module pkt_demux (
   // Beat-0 field extraction (AXI-Stream little-endian, byte N = tdata[8*(N+1)-1:8*N])
   wire [15:0] ethertype   = {s_axis_tdata[103:96],  s_axis_tdata[111:104]};
   wire  [7:0] ip_proto    =  s_axis_tdata[191:184];
-  wire [15:0] udp_dport   = {s_axis_tdata[279:272], s_axis_tdata[287:280]};
+  // UDP header starts at frame byte 34: bytes 34-35 = src port, 36-37 = dst port.
+  // Prior buggy code sliced bytes 34-35 here (matched src instead of dst),
+  // dropping any incoming UDP unless the *source* port happened to equal
+  // cfg_udp_port. Move to bytes 36-37.
+  wire [15:0] udp_dport   = {s_axis_tdata[295:288], s_axis_tdata[303:296]};
 
   wire        frame_match = (ethertype == 16'h0800) &&
                             (ip_proto  == 8'd17)    &&
