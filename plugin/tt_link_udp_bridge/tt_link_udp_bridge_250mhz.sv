@@ -97,6 +97,10 @@ module tt_link_udp_bridge_250mhz #(
 
   wire  [31:0] stat_tx_frames, stat_tx_oversize;
   wire  [31:0] stat_rx_frames, stat_rx_bad_cksum, stat_rx_bad_port, stat_rx_oversize;
+  // Debug counters split out from stat_rx_bad_cksum (which lumps 4 distinct
+  // decap reject causes). Helps localize which branch fires for live traffic.
+  wire  [31:0] stat_dbg_bad_iphdr, stat_dbg_bad_proto;
+  wire  [31:0] stat_dbg_short_frame, stat_dbg_cksum_fail;
   wire  [31:0] stat_cls_passed, stat_cls_dropped;   // tt_link_classifier
   wire  [31:0] stat_dmx_passed, stat_dmx_dropped;   // pkt_demux
 
@@ -132,6 +136,10 @@ module tt_link_udp_bridge_250mhz #(
     .stat_rx_bad_cksum   (stat_rx_bad_cksum),
     .stat_rx_bad_port    (stat_rx_bad_port),
     .stat_rx_oversize    (stat_rx_oversize),
+    .stat_dbg_bad_iphdr  (stat_dbg_bad_iphdr),
+    .stat_dbg_bad_proto  (stat_dbg_bad_proto),
+    .stat_dbg_short_frame(stat_dbg_short_frame),
+    .stat_dbg_cksum_fail (stat_dbg_cksum_fail),
     .stat_cls_passed     (stat_cls_passed),
     .stat_cls_dropped    (stat_cls_dropped),
     .stat_dmx_passed     (stat_dmx_passed),
@@ -257,6 +265,10 @@ module tt_link_udp_bridge_250mhz #(
     .stat_drops_bad_cksum(stat_rx_bad_cksum),
     .stat_drops_bad_port (stat_rx_bad_port),
     .stat_drops_oversize (stat_rx_oversize),
+    .stat_dbg_bad_iphdr  (stat_dbg_bad_iphdr),
+    .stat_dbg_bad_proto  (stat_dbg_bad_proto),
+    .stat_dbg_short_frame(stat_dbg_short_frame),
+    .stat_dbg_cksum_fail (stat_dbg_cksum_fail),
 
     .clk                 (axis_aclk),
     .rst_n               (rst_n)

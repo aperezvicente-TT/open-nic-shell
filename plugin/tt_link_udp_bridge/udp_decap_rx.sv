@@ -46,6 +46,14 @@ module udp_decap_rx (
   output reg   [31:0] stat_drops_bad_port,
   output reg   [31:0] stat_drops_oversize,
 
+  // Debug counters split out from stat_drops_bad_cksum (which lumps four
+  // distinct reject causes into a single increment). Used to discriminate
+  // which decap-reject branch is firing for live traffic.
+  output reg   [31:0] stat_dbg_bad_iphdr,    // ver_ihl != 0x45
+  output reg   [31:0] stat_dbg_bad_proto,    // ip_proto != 17 (UDP)
+  output reg   [31:0] stat_dbg_short_frame,  // tlast asserted in beat 0
+  output reg   [31:0] stat_dbg_cksum_fail,   // IPv4 hdr checksum mismatch
+
   input  wire         clk,
   input  wire         rst_n
 );
@@ -143,6 +151,10 @@ module udp_decap_rx (
       stat_drops_bad_cksum<= '0;
       stat_drops_bad_port <= '0;
       stat_drops_oversize <= '0;
+      stat_dbg_bad_iphdr  <= '0;
+      stat_dbg_bad_proto  <= '0;
+      stat_dbg_short_frame<= '0;
+      stat_dbg_cksum_fail <= '0;
     end else begin
 
       if (m_axis_tvalid && m_axis_tready)
@@ -163,9 +175,11 @@ module udp_decap_rx (
             // Early drop checks we can do on beat 0
             if (b14_ver_ihl != 8'h45) begin
               stat_drops_bad_cksum <= stat_drops_bad_cksum + 1;
+              stat_dbg_bad_iphdr   <= stat_dbg_bad_iphdr + 1;
               state <= S_DROP;
             end else if (b23_ip_proto != 8'd17) begin
               stat_drops_bad_cksum <= stat_drops_bad_cksum + 1;
+              stat_dbg_bad_proto   <= stat_dbg_bad_proto + 1;
               state <= S_DROP;
             end else if (b34_udp_dport_beat0 != cfg_udp_port) begin
               stat_drops_bad_port <= stat_drops_bad_port + 1;
@@ -176,6 +190,7 @@ module udp_decap_rx (
             end else if (s_axis_tlast) begin
               // Frame ended in beat 0 — too short to be valid
               stat_drops_bad_cksum <= stat_drops_bad_cksum + 1;
+              stat_dbg_short_frame <= stat_dbg_short_frame + 1;
               state <= S_BEAT0;
             end else begin
               state <= S_BEAT1;
@@ -192,6 +207,7 @@ module udp_decap_rx (
           if (fire_in && out_ready) begin
             if (!cksum_ok) begin
               stat_drops_bad_cksum <= stat_drops_bad_cksum + 1;
+              stat_dbg_cksum_fail  <= stat_dbg_cksum_fail + 1;
               state <= S_DROP;
             end else begin
               m_axis_tvalid     <= 1'b1;

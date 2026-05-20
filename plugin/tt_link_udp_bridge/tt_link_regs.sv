@@ -14,6 +14,10 @@
 //   0x0434:    stat_cls_dropped  (tt_link_classifier frames dropped)
 //   0x0438:    stat_dmx_passed   (pkt_demux frames forwarded)
 //   0x043C:    stat_dmx_dropped  (pkt_demux frames dropped)
+//   0x0440:    stat_dbg_bad_iphdr   (decap: ver_ihl != 0x45)
+//   0x0444:    stat_dbg_bad_proto   (decap: ip_proto != UDP/17)
+//   0x0448:    stat_dbg_short_frame (decap: tlast asserted in beat 0)
+//   0x044C:    stat_dbg_cksum_fail  (decap: IPv4 hdr checksum mismatch)
 
 module tt_link_regs (
   input  wire         s_axil_awvalid,
@@ -49,6 +53,12 @@ module tt_link_regs (
   input  wire [31:0]  stat_rx_bad_cksum,
   input  wire [31:0]  stat_rx_bad_port,
   input  wire [31:0]  stat_rx_oversize,
+  // Debug counters splitting stat_rx_bad_cksum into its four reject causes.
+  // Helps localize which decap branch fires under live traffic.
+  input  wire [31:0]  stat_dbg_bad_iphdr,
+  input  wire [31:0]  stat_dbg_bad_proto,
+  input  wire [31:0]  stat_dbg_short_frame,
+  input  wire [31:0]  stat_dbg_cksum_fail,
   // F1 classifier / demux stats
   input  wire [31:0]  stat_cls_passed,
   input  wire [31:0]  stat_cls_dropped,
@@ -151,6 +161,11 @@ module tt_link_regs (
           12'h434: s_axil_rdata <= stat_cls_dropped;
           12'h438: s_axil_rdata <= stat_dmx_passed;
           12'h43C: s_axil_rdata <= stat_dmx_dropped;
+          // Debug counters for udp_decap_rx bad_cksum-bucket discrimination.
+          12'h440: s_axil_rdata <= stat_dbg_bad_iphdr;
+          12'h444: s_axil_rdata <= stat_dbg_bad_proto;
+          12'h448: s_axil_rdata <= stat_dbg_short_frame;
+          12'h44C: s_axil_rdata <= stat_dbg_cksum_fail;
           default: s_axil_rdata <= 32'hDEAD_BEEF;
         endcase
       end
