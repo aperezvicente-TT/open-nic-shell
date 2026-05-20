@@ -80,6 +80,12 @@ module udp_decap_rx (
   logic [19:0] vck_sum;
   logic [16:0] vck_fold;
   logic        cksum_ok;
+  // Parallel computation against b14_ip_hdr (combinational on beat 0 tdata,
+  // before ip_hdr_r is latched). Used by the single-beat emit path below
+  // where we have to validate and emit in the same cycle.
+  logic [19:0] vck_sum_b0;
+  logic [16:0] vck_fold_b0;
+  logic        cksum_ok_b0;
 
   always_comb begin
     // ip_hdr_r[7:0] = byte 14 (version/IHL), ..., ip_hdr_r[159:152] = byte 33 (dst IP LSB)
@@ -95,6 +101,19 @@ module udp_decap_rx (
              + {4'h0, ip_hdr_r[159:144]};  // bytes 32-33 (dst IP lo)
     vck_fold = vck_sum[19:16] + vck_sum[15:0];
     cksum_ok = (vck_fold[16] ? vck_fold[15:0] + 17'd1 : {1'b0, vck_fold[15:0]}) == 17'h0FFFF;
+
+    vck_sum_b0  = {4'h0, b14_ip_hdr[ 15:  0]}
+                + {4'h0, b14_ip_hdr[ 31: 16]}
+                + {4'h0, b14_ip_hdr[ 47: 32]}
+                + {4'h0, b14_ip_hdr[ 63: 48]}
+                + {4'h0, b14_ip_hdr[ 79: 64]}
+                + {4'h0, b14_ip_hdr[ 95: 80]}
+                + {4'h0, b14_ip_hdr[111: 96]}
+                + {4'h0, b14_ip_hdr[127:112]}
+                + {4'h0, b14_ip_hdr[143:128]}
+                + {4'h0, b14_ip_hdr[159:144]};
+    vck_fold_b0 = vck_sum_b0[19:16] + vck_sum_b0[15:0];
+    cksum_ok_b0 = (vck_fold_b0[16] ? vck_fold_b0[15:0] + 17'd1 : {1'b0, vck_fold_b0[15:0]}) == 17'h0FFFF;
   end
 
   // ---------------------------------------------------------------------------
@@ -188,10 +207,31 @@ module udp_decap_rx (
               stat_drops_oversize <= stat_drops_oversize + 1;
               state <= S_DROP;
             end else if (s_axis_tlast) begin
-              // Frame ended in beat 0 — too short to be valid
-              stat_drops_bad_cksum <= stat_drops_bad_cksum + 1;
-              stat_dbg_short_frame <= stat_dbg_short_frame + 1;
-              state <= S_BEAT0;
+              // Single-beat frame (≤64B on wire — typical for a min-size
+              // IPv4 UDP packet 14+20+8+0..18 padded to 60B by Ethernet).
+              // The S_BEAT1 emit path is unreachable here; instead validate
+              // the checksum off the live tdata (cksum_ok_b0) and emit one
+              // output beat containing just the carry payload (bytes 42..63
+              // of input).
+              if (!cksum_ok_b0) begin
+                stat_drops_bad_cksum <= stat_drops_bad_cksum + 1;
+                stat_dbg_cksum_fail  <= stat_dbg_cksum_fail + 1;
+                state <= S_BEAT0;
+              end else if (out_ready) begin
+                m_axis_tvalid     <= 1'b1;
+                m_axis_tdata      <= {336'h0, next_carry_data};
+                m_axis_tkeep      <= {42'h0,  next_carry_keep};
+                m_axis_tlast      <= 1'b1;
+                m_axis_tuser_size <= s_axis_tuser_size - 16'd42;
+                stat_frames_out   <= stat_frames_out + 1;
+                state <= S_BEAT0;
+              end else begin
+                // Downstream not ready and we can't buffer — count the
+                // contention and drop. In practice the framer is fast so
+                // out_ready is true; this branch exists for safety.
+                stat_dbg_short_frame <= stat_dbg_short_frame + 1;
+                state <= S_BEAT0;
+              end
             end else begin
               state <= S_BEAT1;
             end
