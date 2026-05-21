@@ -1,0 +1,6 @@
+sim_build/
+results.xml
+wave.fst
+__pycache__/
+*.pyc
+wave.fst.hier
