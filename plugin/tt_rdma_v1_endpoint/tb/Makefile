@@ -8,6 +8,7 @@ PYTHON_BIN      ?= /usr/bin/python3
 VERILOG_SOURCES  = $(abspath ../rdma_regs.sv)
 VERILOG_SOURCES += $(abspath ../rdma_rx_classifier.sv)
 VERILOG_SOURCES += $(abspath ../rdma_hdr_parser.sv)
+VERILOG_SOURCES += $(abspath ../rdma_rx_ring.sv)
 VERILOG_SOURCES += $(abspath ../tt_rdma_v1_endpoint_250mhz.sv)
 VERILOG_SOURCES += $(abspath tb_top.sv)
 

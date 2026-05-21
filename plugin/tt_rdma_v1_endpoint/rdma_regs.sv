@@ -81,6 +81,15 @@ module rdma_regs (
   input  wire         pulse_op_unknown,      // 0x320
   input  wire         pulse_ethtype_drop,    // 0x334
   input  wire         pulse_ethtype_legacy,  // 0x518 (sits in the 0x500 dbg block; legacy soak counter)
+  input  wire         pulse_rx_overflow,     // 0x058
+
+  // Phase C RxWqeRing config + status
+  output reg  [31:0]  cfg_rx_ring_base_lo,
+  output reg  [31:0]  cfg_rx_ring_base_hi,
+  output reg  [31:0]  cfg_rx_ring_log2n,
+  output reg  [31:0]  cfg_rx_slot_stride,
+  input  wire [31:0]  rx_prod_idx_live,
+  output reg  [31:0]  cfg_rx_cons_idx,
 
   input  wire         aclk,
   input  wire         rst_n
@@ -107,6 +116,7 @@ module rdma_regs (
   reg [31:0] cnt_op_unknown;
   reg [31:0] cnt_ethtype_drop;
   reg [31:0] cnt_ethtype_legacy;
+  reg [31:0] cnt_rx_overflow;
 
   // AXI-Lite ready backpressure (AXI4 §A3.3) — see header comment for why.
   // Without this every CSR write risks taking the host kernel down.
@@ -140,6 +150,13 @@ module rdma_regs (
       cnt_op_unknown     <= '0;
       cnt_ethtype_drop   <= '0;
       cnt_ethtype_legacy <= '0;
+      cnt_rx_overflow    <= '0;
+
+      cfg_rx_ring_base_lo <= '0;
+      cfg_rx_ring_base_hi <= '0;
+      cfg_rx_ring_log2n   <= 32'd6;     // 64 slots (RING_DEPTH default)
+      cfg_rx_slot_stride  <= 32'd1536;  // host-sdk.md §3
+      cfg_rx_cons_idx     <= '0;
     end else begin
       if (pulse_op_send)        cnt_op_send        <= cnt_op_send        + 1;
       if (pulse_op_send_imm)    cnt_op_send_imm    <= cnt_op_send_imm    + 1;
@@ -152,6 +169,7 @@ module rdma_regs (
       if (pulse_op_unknown)     cnt_op_unknown     <= cnt_op_unknown     + 1;
       if (pulse_ethtype_drop)   cnt_ethtype_drop   <= cnt_ethtype_drop   + 1;
       if (pulse_ethtype_legacy) cnt_ethtype_legacy <= cnt_ethtype_legacy + 1;
+      if (pulse_rx_overflow)    cnt_rx_overflow    <= cnt_rx_overflow    + 1;
       if (s_axil_bvalid && s_axil_bready) s_axil_bvalid <= 1'b0;
       if (s_axil_rvalid && s_axil_rready) s_axil_rvalid <= 1'b0;
 
@@ -174,6 +192,13 @@ module rdma_regs (
           12'h020: cfg_ethertype        <= s_axil_wdata[15:0];
           12'h024: cfg_mtu              <= s_axil_wdata[15:0];
           12'h028: cfg_pfc              <= s_axil_wdata;
+          12'h040: cfg_rx_ring_base_lo  <= s_axil_wdata;
+          12'h044: cfg_rx_ring_base_hi  <= s_axil_wdata;
+          12'h048: cfg_rx_ring_log2n    <= s_axil_wdata;
+          12'h04C: cfg_rx_slot_stride   <= s_axil_wdata;
+          // 0x050 is RO (prod_idx mirror, written by ring engine)
+          12'h054: cfg_rx_cons_idx      <= s_axil_wdata;
+          // 0x058 is RO (overflow counter)
           default: ;
         endcase
       end
@@ -201,6 +226,14 @@ module rdma_regs (
           12'h020: s_axil_rdata <= {16'h0, cfg_ethertype};
           12'h024: s_axil_rdata <= {16'h0, cfg_mtu};
           12'h028: s_axil_rdata <= cfg_pfc;
+          // Phase C: RxWqeRing config + status
+          12'h040: s_axil_rdata <= cfg_rx_ring_base_lo;
+          12'h044: s_axil_rdata <= cfg_rx_ring_base_hi;
+          12'h048: s_axil_rdata <= cfg_rx_ring_log2n;
+          12'h04C: s_axil_rdata <= cfg_rx_slot_stride;
+          12'h050: s_axil_rdata <= rx_prod_idx_live;
+          12'h054: s_axil_rdata <= cfg_rx_cons_idx;
+          12'h058: s_axil_rdata <= cnt_rx_overflow;
           // Per-opcode debug counters (0x300-0x33C).  Live now, set by
           // rdma_rx_classifier + rdma_hdr_parser pulses.  Slots not yet
           // claimed read back 0 (decoded, never driven).

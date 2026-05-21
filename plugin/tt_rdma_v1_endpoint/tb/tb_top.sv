@@ -46,7 +46,15 @@ module tb_top (
   output wire  [63:0] m_axis_cmac0_tx_tkeep,
   output wire         m_axis_cmac0_tx_tlast,
   output wire  [15:0] m_axis_cmac0_tx_tuser,
-  input  wire         m_axis_cmac0_tx_tready
+  input  wire         m_axis_cmac0_tx_tready,
+
+  // RxWqeRing publish (Phase C) — one beat per ring slot
+  output wire         m_axis_ring_push_tvalid,
+  output wire [511:0] m_axis_ring_push_tdata,
+  output wire  [63:0] m_axis_ring_push_tkeep,
+  output wire         m_axis_ring_push_tlast,
+  output wire  [15:0] m_axis_ring_push_tuser_slot,
+  input  wire         m_axis_ring_push_tready
 );
 
   tt_rdma_v1_endpoint_250mhz #(
@@ -99,6 +107,13 @@ module tb_top (
     .m_axis_cmac1_tx_tlast       (),
     .m_axis_cmac1_tx_tuser_size  (),
     .m_axis_cmac1_tx_tready      (1'b1),
+
+    .m_axis_ring_push_tvalid     (m_axis_ring_push_tvalid),
+    .m_axis_ring_push_tdata      (m_axis_ring_push_tdata),
+    .m_axis_ring_push_tkeep      (m_axis_ring_push_tkeep),
+    .m_axis_ring_push_tlast      (m_axis_ring_push_tlast),
+    .m_axis_ring_push_tuser_slot (m_axis_ring_push_tuser_slot),
+    .m_axis_ring_push_tready     (m_axis_ring_push_tready),
 
     .axis_aclk                   (clk),
     .axil_aclk                   (clk),

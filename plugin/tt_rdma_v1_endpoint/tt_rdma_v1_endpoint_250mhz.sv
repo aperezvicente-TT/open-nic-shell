@@ -84,6 +84,15 @@ module tt_rdma_v1_endpoint_250mhz #(
   output wire  [15:0] m_axis_cmac1_tx_tuser_size,
   input  wire         m_axis_cmac1_tx_tready,
 
+  // Phase C: RxWqeRing publish AXI-Stream (one beat per ring slot).
+  // The box harness wraps this into the shell's QDMA C2H output.
+  output wire         m_axis_ring_push_tvalid,
+  output wire [511:0] m_axis_ring_push_tdata,
+  output wire  [63:0] m_axis_ring_push_tkeep,
+  output wire         m_axis_ring_push_tlast,
+  output wire  [15:0] m_axis_ring_push_tuser_slot,
+  input  wire         m_axis_ring_push_tready,
+
   input  wire         axis_aclk,
   input  wire         axil_aclk,
   input  wire         rst_n
@@ -104,6 +113,21 @@ module tt_rdma_v1_endpoint_250mhz #(
   wire op_send_pulse, op_send_imm_pulse, op_write_pulse, op_write_imm_pulse;
   wire op_read_req_pulse, op_read_resp_pulse, op_ack_pulse, op_control_pulse;
   wire op_unknown_pulse;
+  wire  [7:0] hdr_opcode;
+  wire  [7:0] hdr_version_flags;
+  wire [15:0] hdr_tag;
+  wire [31:0] hdr_length;
+  wire [31:0] hdr_seq;
+  wire [31:0] hdr_rkey;
+  wire [63:0] hdr_remote_offset;
+  wire [31:0] hdr_imm_data;
+
+  // Phase C ring publisher
+  wire [31:0] rx_prod_idx_live;
+  wire [31:0] cfg_rx_cons_idx;
+  wire [31:0] cfg_rx_ring_base_lo, cfg_rx_ring_base_hi;
+  wire [31:0] cfg_rx_ring_log2n, cfg_rx_slot_stride;
+  wire        overflow_drop_pulse;
 
   rdma_regs regs_inst (
     .s_axil_awvalid (s_axil_awvalid),
@@ -143,6 +167,14 @@ module tt_rdma_v1_endpoint_250mhz #(
     .pulse_op_unknown      (op_unknown_pulse),
     .pulse_ethtype_drop    (ethtype_drop_pulse),
     .pulse_ethtype_legacy  (legacy_link_pulse),
+    .pulse_rx_overflow     (overflow_drop_pulse),
+
+    .cfg_rx_ring_base_lo   (cfg_rx_ring_base_lo),
+    .cfg_rx_ring_base_hi   (cfg_rx_ring_base_hi),
+    .cfg_rx_ring_log2n     (cfg_rx_ring_log2n),
+    .cfg_rx_slot_stride    (cfg_rx_slot_stride),
+    .rx_prod_idx_live      (rx_prod_idx_live),
+    .cfg_rx_cons_idx       (cfg_rx_cons_idx),
 
     .aclk                  (axil_aclk),
     .rst_n                 (rst_n)
@@ -195,8 +227,41 @@ module tt_rdma_v1_endpoint_250mhz #(
     .op_ack_pulse        (op_ack_pulse),
     .op_control_pulse    (op_control_pulse),
     .op_unknown_pulse    (op_unknown_pulse),
+    .hdr_opcode          (hdr_opcode),
+    .hdr_version_flags   (hdr_version_flags),
+    .hdr_tag             (hdr_tag),
+    .hdr_length          (hdr_length),
+    .hdr_seq             (hdr_seq),
+    .hdr_rkey            (hdr_rkey),
+    .hdr_remote_offset   (hdr_remote_offset),
+    .hdr_imm_data        (hdr_imm_data),
     .clk                 (axis_aclk),
     .rst_n               (rst_n)
+  );
+
+  // ── Phase C: RxWqeRing publish ─────────────────────────────────────────
+  // SEND / SEND_IMM frames produce a ring slot; engine emits one beat per
+  // slot via m_axis_ring_push.  The box harness routes this to QDMA C2H.
+  rdma_rx_ring #(
+    .RING_DEPTH (64)
+  ) rx_ring_inst (
+    .op_send_pulse              (op_send_pulse),
+    .op_send_imm_pulse           (op_send_imm_pulse),
+    .hdr_opcode                  (hdr_opcode),
+    .hdr_length                  (hdr_length),
+    .hdr_seq                     (hdr_seq),
+    .hdr_imm_data                (hdr_imm_data),
+    .cfg_rx_cons_idx             (cfg_rx_cons_idx),
+    .m_axis_ring_push_tvalid     (m_axis_ring_push_tvalid),
+    .m_axis_ring_push_tdata      (m_axis_ring_push_tdata),
+    .m_axis_ring_push_tkeep      (m_axis_ring_push_tkeep),
+    .m_axis_ring_push_tlast      (m_axis_ring_push_tlast),
+    .m_axis_ring_push_tuser_slot (m_axis_ring_push_tuser_slot),
+    .m_axis_ring_push_tready     (m_axis_ring_push_tready),
+    .prod_idx                    (rx_prod_idx_live),
+    .overflow_drop_pulse         (overflow_drop_pulse),
+    .clk                         (axis_aclk),
+    .rst_n                       (rst_n)
   );
 
   // Phase A: CMAC0 RX → CMAC0 TX passthrough.  No opcode dispatch yet
