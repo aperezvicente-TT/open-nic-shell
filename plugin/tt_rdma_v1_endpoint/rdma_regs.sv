@@ -65,6 +65,23 @@ module rdma_regs (
   input  wire         status_link_up,
   input  wire         status_mr_table_ready,
 
+  // Per-opcode + ethertype counter pulses from the classifier / parser.
+  // Each pulse increments the corresponding internal counter readable
+  // at 0x300+ / 0x334.  All counters are 32-bit and free-running until
+  // a write to 0x5FC clears the whole 0x300/0x500 block atomically
+  // (clear path lands when the dbg_clear semantic ships).
+  input  wire         pulse_op_send,         // 0x300
+  input  wire         pulse_op_send_imm,     // 0x304
+  input  wire         pulse_op_write,        // 0x308
+  input  wire         pulse_op_write_imm,    // 0x30C
+  input  wire         pulse_op_read_req,     // 0x310
+  input  wire         pulse_op_read_resp,    // 0x314
+  input  wire         pulse_op_ack,          // 0x318
+  input  wire         pulse_op_control,      // 0x31C
+  input  wire         pulse_op_unknown,      // 0x320
+  input  wire         pulse_ethtype_drop,    // 0x334
+  input  wire         pulse_ethtype_legacy,  // 0x518 (sits in the 0x500 dbg block; legacy soak counter)
+
   input  wire         aclk,
   input  wire         rst_n
 );
@@ -77,6 +94,19 @@ module rdma_regs (
   reg        wr_pending;
   reg [31:0] rd_addr_r;
   reg [31:0] scratch;
+
+  // Phase B counters
+  reg [31:0] cnt_op_send;
+  reg [31:0] cnt_op_send_imm;
+  reg [31:0] cnt_op_write;
+  reg [31:0] cnt_op_write_imm;
+  reg [31:0] cnt_op_read_req;
+  reg [31:0] cnt_op_read_resp;
+  reg [31:0] cnt_op_ack;
+  reg [31:0] cnt_op_control;
+  reg [31:0] cnt_op_unknown;
+  reg [31:0] cnt_ethtype_drop;
+  reg [31:0] cnt_ethtype_legacy;
 
   // AXI-Lite ready backpressure (AXI4 §A3.3) — see header comment for why.
   // Without this every CSR write risks taking the host kernel down.
@@ -98,7 +128,30 @@ module rdma_regs (
       cfg_mtu        <= 16'd9000;
       cfg_pfc        <= 32'h00000008;
       scratch        <= '0;
+
+      cnt_op_send        <= '0;
+      cnt_op_send_imm    <= '0;
+      cnt_op_write       <= '0;
+      cnt_op_write_imm   <= '0;
+      cnt_op_read_req    <= '0;
+      cnt_op_read_resp   <= '0;
+      cnt_op_ack         <= '0;
+      cnt_op_control     <= '0;
+      cnt_op_unknown     <= '0;
+      cnt_ethtype_drop   <= '0;
+      cnt_ethtype_legacy <= '0;
     end else begin
+      if (pulse_op_send)        cnt_op_send        <= cnt_op_send        + 1;
+      if (pulse_op_send_imm)    cnt_op_send_imm    <= cnt_op_send_imm    + 1;
+      if (pulse_op_write)       cnt_op_write       <= cnt_op_write       + 1;
+      if (pulse_op_write_imm)   cnt_op_write_imm   <= cnt_op_write_imm   + 1;
+      if (pulse_op_read_req)    cnt_op_read_req    <= cnt_op_read_req    + 1;
+      if (pulse_op_read_resp)   cnt_op_read_resp   <= cnt_op_read_resp   + 1;
+      if (pulse_op_ack)         cnt_op_ack         <= cnt_op_ack         + 1;
+      if (pulse_op_control)     cnt_op_control     <= cnt_op_control     + 1;
+      if (pulse_op_unknown)     cnt_op_unknown     <= cnt_op_unknown     + 1;
+      if (pulse_ethtype_drop)   cnt_ethtype_drop   <= cnt_ethtype_drop   + 1;
+      if (pulse_ethtype_legacy) cnt_ethtype_legacy <= cnt_ethtype_legacy + 1;
       if (s_axil_bvalid && s_axil_bready) s_axil_bvalid <= 1'b0;
       if (s_axil_rvalid && s_axil_rready) s_axil_rvalid <= 1'b0;
 
@@ -135,26 +188,49 @@ module rdma_regs (
         // General-purpose debug counter block (0x500-0x5FC): same — engine
         // tripwires will wire in here.  Bake the decode in now so the
         // engines plug in without re-touching the CSR file.
-        if (s_axil_araddr[11:0] >= 12'h300 && s_axil_araddr[11:0] <= 12'h33C) begin
-          s_axil_rdata <= 32'h0;
-        end else if (s_axil_araddr[11:0] >= 12'h500 && s_axil_araddr[11:0] <= 12'h5FC) begin
-          s_axil_rdata <= 32'h0;
-        end else begin
-          case (s_axil_araddr[11:0])
-            12'h000: s_axil_rdata <= 32'h0001_0000;
-            12'h004: s_axil_rdata <= scratch;
-            12'h008: s_axil_rdata <= cfg_ctrl;
-            12'h00C: s_axil_rdata <= {30'h0, status_mr_table_ready, status_link_up};
-            12'h010: s_axil_rdata <= {16'h0, cfg_local_mac[47:32]};
-            12'h014: s_axil_rdata <= cfg_local_mac[31:0];
-            12'h018: s_axil_rdata <= {16'h0, cfg_peer_mac[47:32]};
-            12'h01C: s_axil_rdata <= cfg_peer_mac[31:0];
-            12'h020: s_axil_rdata <= {16'h0, cfg_ethertype};
-            12'h024: s_axil_rdata <= {16'h0, cfg_mtu};
-            12'h028: s_axil_rdata <= cfg_pfc;
-            default: s_axil_rdata <= 32'hDEAD_BEEF;
-          endcase
-        end
+        case (s_axil_araddr[11:0])
+          // Core CSRs
+          12'h000: s_axil_rdata <= 32'h0001_0000;
+          12'h004: s_axil_rdata <= scratch;
+          12'h008: s_axil_rdata <= cfg_ctrl;
+          12'h00C: s_axil_rdata <= {30'h0, status_mr_table_ready, status_link_up};
+          12'h010: s_axil_rdata <= {16'h0, cfg_local_mac[47:32]};
+          12'h014: s_axil_rdata <= cfg_local_mac[31:0];
+          12'h018: s_axil_rdata <= {16'h0, cfg_peer_mac[47:32]};
+          12'h01C: s_axil_rdata <= cfg_peer_mac[31:0];
+          12'h020: s_axil_rdata <= {16'h0, cfg_ethertype};
+          12'h024: s_axil_rdata <= {16'h0, cfg_mtu};
+          12'h028: s_axil_rdata <= cfg_pfc;
+          // Per-opcode debug counters (0x300-0x33C).  Live now, set by
+          // rdma_rx_classifier + rdma_hdr_parser pulses.  Slots not yet
+          // claimed read back 0 (decoded, never driven).
+          12'h300: s_axil_rdata <= cnt_op_send;
+          12'h304: s_axil_rdata <= cnt_op_send_imm;
+          12'h308: s_axil_rdata <= cnt_op_write;
+          12'h30C: s_axil_rdata <= cnt_op_write_imm;
+          12'h310: s_axil_rdata <= cnt_op_read_req;
+          12'h314: s_axil_rdata <= cnt_op_read_resp;
+          12'h318: s_axil_rdata <= cnt_op_ack;
+          12'h31C: s_axil_rdata <= cnt_op_control;
+          12'h320: s_axil_rdata <= cnt_op_unknown;
+          12'h324: s_axil_rdata <= 32'h0;          // rkey_miss     — wires in P1
+          12'h328: s_axil_rdata <= 32'h0;          // rkey_access   — P1
+          12'h32C: s_axil_rdata <= 32'h0;          // rkey_bounds   — P1
+          12'h330: s_axil_rdata <= 32'h0;          // hdr_cksum_fail — P1 / Phase R
+          12'h334: s_axil_rdata <= cnt_ethtype_drop;
+          12'h338: s_axil_rdata <= 32'h0;          // bad_dst_drop  — drives in tx_arbiter (P5)
+          12'h33C: s_axil_rdata <= 32'h0;          // qdma_wr_err   — P1
+          // 0x500-0x5FC debug block — wired phase-by-phase.  Slot 0x518
+          // claimed today for legacy-ethertype counter (0x1AF4/5 soak).
+          12'h518: s_axil_rdata <= cnt_ethtype_legacy;
+          default: begin
+            if (s_axil_araddr[11:0] >= 12'h500 && s_axil_araddr[11:0] <= 12'h5FC) begin
+              s_axil_rdata <= 32'h0;  // 0x500 block — slot decoded, not yet driven
+            end else begin
+              s_axil_rdata <= 32'hDEAD_BEEF;
+            end
+          end
+        endcase
       end
     end
   end

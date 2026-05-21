@@ -97,6 +97,14 @@ module tt_rdma_v1_endpoint_250mhz #(
   wire [15:0] cfg_mtu;
   wire [31:0] cfg_pfc;
 
+  // Phase B classifier + parser pulses (1-cycle, one per inbound frame)
+  wire rdma_v1_pulse;
+  wire legacy_link_pulse;
+  wire ethtype_drop_pulse;
+  wire op_send_pulse, op_send_imm_pulse, op_write_pulse, op_write_imm_pulse;
+  wire op_read_req_pulse, op_read_resp_pulse, op_ack_pulse, op_control_pulse;
+  wire op_unknown_pulse;
+
   rdma_regs regs_inst (
     .s_axil_awvalid (s_axil_awvalid),
     .s_axil_awaddr  (s_axil_awaddr),
@@ -124,8 +132,71 @@ module tt_rdma_v1_endpoint_250mhz #(
     .status_link_up        (1'b0),
     .status_mr_table_ready (1'b0),
 
+    .pulse_op_send         (op_send_pulse),
+    .pulse_op_send_imm     (op_send_imm_pulse),
+    .pulse_op_write        (op_write_pulse),
+    .pulse_op_write_imm    (op_write_imm_pulse),
+    .pulse_op_read_req     (op_read_req_pulse),
+    .pulse_op_read_resp    (op_read_resp_pulse),
+    .pulse_op_ack          (op_ack_pulse),
+    .pulse_op_control      (op_control_pulse),
+    .pulse_op_unknown      (op_unknown_pulse),
+    .pulse_ethtype_drop    (ethtype_drop_pulse),
+    .pulse_ethtype_legacy  (legacy_link_pulse),
+
     .aclk                  (axil_aclk),
     .rst_n                 (rst_n)
+  );
+
+  // ── Phase B: classifier + opcode dispatch (snoop, no data-path block) ──
+  // Classifier watches CMAC0 RX beat-0, emits per-ethertype pulses.
+  // The data path is unchanged — frames continue to flow through the
+  // skid buffer to CMAC0 TX.  Engines (Phase B+) will replace that
+  // passthrough when they're built.
+  rdma_rx_classifier classifier_inst (
+    .s_axis_tvalid       (s_axis_cmac0_rx_tvalid),
+    .s_axis_tdata        (s_axis_cmac0_rx_tdata),
+    .s_axis_tlast        (s_axis_cmac0_rx_tlast),
+    .s_axis_tready       (s_axis_cmac0_rx_tready),
+    .rdma_v1_pulse       (rdma_v1_pulse),
+    .legacy_link_pulse   (legacy_link_pulse),
+    .ethtype_drop_pulse  (ethtype_drop_pulse),
+    .clk                 (axis_aclk),
+    .rst_n               (rst_n)
+  );
+
+  // Parser is gated by rdma_v1_pulse: only TT-RDMA-v1 frames get
+  // opcode-dispatched.  Note: rdma_v1_pulse is registered (one cycle
+  // after the beat), so we need the same-cycle tdata.  Easiest:
+  // re-register beat-0 tdata into a small holding latch.  But because
+  // the classifier already registered the pulse from the matched
+  // beat, by the time rdma_v1_pulse is high the tdata bus may have
+  // moved on.  Mitigation: latch beat-0 tdata one cycle (combinational
+  // capture) and feed it to the parser alongside the registered
+  // rdma_v1_pulse.
+  reg [511:0] beat0_tdata_q;
+  always_ff @(posedge axis_aclk) begin
+    if (!rst_n) begin
+      beat0_tdata_q <= '0;
+    end else if (s_axis_cmac0_rx_tvalid && s_axis_cmac0_rx_tready) begin
+      beat0_tdata_q <= s_axis_cmac0_rx_tdata;
+    end
+  end
+
+  rdma_hdr_parser parser_inst (
+    .rdma_v1_frame_start (rdma_v1_pulse),
+    .s_axis_tdata        (beat0_tdata_q),
+    .op_send_pulse       (op_send_pulse),
+    .op_send_imm_pulse   (op_send_imm_pulse),
+    .op_write_pulse      (op_write_pulse),
+    .op_write_imm_pulse  (op_write_imm_pulse),
+    .op_read_req_pulse   (op_read_req_pulse),
+    .op_read_resp_pulse  (op_read_resp_pulse),
+    .op_ack_pulse        (op_ack_pulse),
+    .op_control_pulse    (op_control_pulse),
+    .op_unknown_pulse    (op_unknown_pulse),
+    .clk                 (axis_aclk),
+    .rst_n               (rst_n)
   );
 
   // Phase A: CMAC0 RX → CMAC0 TX passthrough.  No opcode dispatch yet
