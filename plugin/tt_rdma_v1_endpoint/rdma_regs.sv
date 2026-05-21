@@ -128,20 +128,33 @@ module rdma_regs (
       if (s_axil_arvalid && s_axil_arready) begin
         rd_addr_r     <= s_axil_araddr;
         s_axil_rvalid <= 1'b1;
-        case (s_axil_araddr[11:0])
-          12'h000: s_axil_rdata <= 32'h0001_0000;
-          12'h004: s_axil_rdata <= scratch;
-          12'h008: s_axil_rdata <= cfg_ctrl;
-          12'h00C: s_axil_rdata <= {30'h0, status_mr_table_ready, status_link_up};
-          12'h010: s_axil_rdata <= {16'h0, cfg_local_mac[47:32]};
-          12'h014: s_axil_rdata <= cfg_local_mac[31:0];
-          12'h018: s_axil_rdata <= {16'h0, cfg_peer_mac[47:32]};
-          12'h01C: s_axil_rdata <= cfg_peer_mac[31:0];
-          12'h020: s_axil_rdata <= {16'h0, cfg_ethertype};
-          12'h024: s_axil_rdata <= {16'h0, cfg_mtu};
-          12'h028: s_axil_rdata <= cfg_pfc;
-          default: s_axil_rdata <= 32'hDEAD_BEEF;
-        endcase
+        // Per-opcode debug counter region (0x300-0x33C, 16 slots): all 0
+        // until the dispatch engines that drive them land in Phase B+.
+        // Returning 0 instead of DEADBEEF tells software the address
+        // is mapped and the counter just hasn't moved yet.
+        // General-purpose debug counter block (0x500-0x5FC): same — engine
+        // tripwires will wire in here.  Bake the decode in now so the
+        // engines plug in without re-touching the CSR file.
+        if (s_axil_araddr[11:0] >= 12'h300 && s_axil_araddr[11:0] <= 12'h33C) begin
+          s_axil_rdata <= 32'h0;
+        end else if (s_axil_araddr[11:0] >= 12'h500 && s_axil_araddr[11:0] <= 12'h5FC) begin
+          s_axil_rdata <= 32'h0;
+        end else begin
+          case (s_axil_araddr[11:0])
+            12'h000: s_axil_rdata <= 32'h0001_0000;
+            12'h004: s_axil_rdata <= scratch;
+            12'h008: s_axil_rdata <= cfg_ctrl;
+            12'h00C: s_axil_rdata <= {30'h0, status_mr_table_ready, status_link_up};
+            12'h010: s_axil_rdata <= {16'h0, cfg_local_mac[47:32]};
+            12'h014: s_axil_rdata <= cfg_local_mac[31:0];
+            12'h018: s_axil_rdata <= {16'h0, cfg_peer_mac[47:32]};
+            12'h01C: s_axil_rdata <= cfg_peer_mac[31:0];
+            12'h020: s_axil_rdata <= {16'h0, cfg_ethertype};
+            12'h024: s_axil_rdata <= {16'h0, cfg_mtu};
+            12'h028: s_axil_rdata <= cfg_pfc;
+            default: s_axil_rdata <= 32'hDEAD_BEEF;
+          endcase
+        end
       end
     end
   end

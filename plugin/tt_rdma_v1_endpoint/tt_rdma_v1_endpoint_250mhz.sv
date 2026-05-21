@@ -128,18 +128,51 @@ module tt_rdma_v1_endpoint_250mhz #(
     .rst_n                 (rst_n)
   );
 
-  // P0: drain CMAC0 RX, no TX yet.
-  assign s_axis_cmac0_rx_tready = 1'b1;
+  // Phase A: CMAC0 RX → CMAC0 TX passthrough.  No opcode dispatch yet
+  // (lands in Phase B).  The point of having it now is to (a) prove the
+  // data path is clean for jumbo frames up to LINK_MTU, (b) keep the
+  // tuser_dst contract exercised end-to-end through the box harness,
+  // (c) give the debug counter blocks something to count once they wire
+  // in.  Implemented as a 1-deep skid buffer so back-pressure from
+  // downstream propagates correctly to upstream.
+  reg          skid_tvalid;
+  reg  [511:0] skid_tdata;
+  reg   [63:0] skid_tkeep;
+  reg          skid_tlast;
+  reg   [15:0] skid_tuser_size;
 
-  // P0: no TX traffic — but if/when later phases drive it, tuser_dst MUST
-  // have bit (CMAC0_ID+6) set or packet_adapter_tx.sv:116 silently drops.
-  // Drive it stably here so future engines can OR in additional bits
-  // without thinking about it.
-  assign m_axis_cmac0_tx_tvalid     = 1'b0;
-  assign m_axis_cmac0_tx_tdata      = '0;
-  assign m_axis_cmac0_tx_tkeep      = '0;
-  assign m_axis_cmac0_tx_tlast      = 1'b0;
-  assign m_axis_cmac0_tx_tuser_size = '0;
+  wire         can_load   = !skid_tvalid || m_axis_cmac0_tx_tready;
+  assign s_axis_cmac0_rx_tready = can_load;
+
+  always_ff @(posedge axis_aclk) begin
+    if (!rst_n) begin
+      skid_tvalid     <= 1'b0;
+      skid_tdata      <= '0;
+      skid_tkeep      <= '0;
+      skid_tlast      <= 1'b0;
+      skid_tuser_size <= '0;
+    end else begin
+      if (skid_tvalid && m_axis_cmac0_tx_tready) begin
+        skid_tvalid <= 1'b0;
+      end
+      if (s_axis_cmac0_rx_tvalid && can_load) begin
+        skid_tvalid     <= 1'b1;
+        skid_tdata      <= s_axis_cmac0_rx_tdata;
+        skid_tkeep      <= s_axis_cmac0_rx_tkeep;
+        skid_tlast      <= s_axis_cmac0_rx_tlast;
+        skid_tuser_size <= s_axis_cmac0_rx_tuser_size;
+      end
+    end
+  end
+
+  assign m_axis_cmac0_tx_tvalid     = skid_tvalid;
+  assign m_axis_cmac0_tx_tdata      = skid_tdata;
+  assign m_axis_cmac0_tx_tkeep      = skid_tkeep;
+  assign m_axis_cmac0_tx_tlast      = skid_tlast;
+  assign m_axis_cmac0_tx_tuser_size = skid_tuser_size;
+  // tuser_dst is driven by the box harness (user_plugin_250mhz_inst.vh) so
+  // the per-CMAC bit (CMAC0_ID+6) is set whenever tvalid asserts.  See
+  // d40be7b for the bug class this defends against.
 
   // CMAC1 fully tied off — v1 endpoint is single-port.
   assign s_axis_cmac1_rx_tready     = 1'b1;
