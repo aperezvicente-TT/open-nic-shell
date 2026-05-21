@@ -37,6 +37,12 @@ module rdma_rx_classifier (
   output reg          legacy_link_pulse,     // 0x1AF4 / 0x1AF5
   output reg          ethtype_drop_pulse,    // everything else
 
+  // High when the *next* fired beat is beat-0 of a frame.  Exposed so a
+  // top-level beat-0-data latch can gate its capture and avoid the
+  // multi-beat / back-to-back NBA fragility called out in M1 of the
+  // Phase-C review.
+  output wire         is_beat0_w,
+
   input  wire         clk,
   input  wire         rst_n
 );
@@ -48,6 +54,8 @@ module rdma_rx_classifier (
 
   wire        fire_in   = s_axis_tvalid && s_axis_tready;
   wire [15:0] ethertype = {s_axis_tdata[103:96], s_axis_tdata[111:104]};
+
+  assign is_beat0_w = is_beat0;
 
   always_ff @(posedge clk) begin
     if (!rst_n) begin

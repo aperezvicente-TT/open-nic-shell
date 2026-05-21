@@ -61,7 +61,8 @@ async def _reset(dut, cycles=5):
     for _ in range(cycles):
         await RisingEdge(dut.clk)
     dut.rst_n.value = 1
-    for _ in range(2):
+    # Wait for generic_reset (RESET_DURATION + S_FLUSH window) to settle.
+    for _ in range(20):
         await RisingEdge(dut.clk)
 
 
@@ -127,8 +128,9 @@ async def _send_one_beat_frame(dut, ethertype, opcode):
         await RisingEdge(dut.clk)
     dut.s_axis_cmac0_rx_tvalid.value = 0
     dut.s_axis_cmac0_rx_tlast.value  = 0
-    # Allow 3 clocks for the pulse to propagate through classifier → parser → counter
-    for _ in range(4):
+    # Allow time for: classifier (1) → parser (1) → cdc_pulse_sync axis→axil
+    # (toggle + 2-FF sync + edge detect, ~4 cycles) → CSR increment (1).
+    for _ in range(15):
         await RisingEdge(dut.clk)
 
 
@@ -205,6 +207,44 @@ async def test_legacy_ethertypes_count_separately(dut):
     drop   = await _axil_read(dut, ETHTYPE_DROP_OFFSET)
     assert legacy == 2, f"ethtype_legacy expected 2, got {legacy}"
     assert drop   == 0, f"ethtype_drop expected 0, got {drop}"
+
+
+@cocotb.test()
+async def test_clear_all_counters_snaps_back_to_zero(dut):
+    """A write to 0x5FC snaps every per-opcode + ethertype counter to 0.
+    Lets bring-up scripts snapshot-and-clear without bouncing PCIe."""
+    cocotb.start_soon(Clock(dut.clk, CLK_NS, units="ns").start())
+    await _reset(dut)
+
+    # Drive a few frames so the counters move
+    for opcode in (0x01, 0x02, 0x10, 0xF0):
+        await _send_one_beat_frame(dut, 0x1AF6, opcode)
+    await _send_one_beat_frame(dut, 0x0800, 0x01)  # ethtype_drop
+    await _send_one_beat_frame(dut, 0x1AF4, 0x01)  # ethtype_legacy
+
+    # All four opcode counters and the drop/legacy counters should be > 0
+    assert (await _axil_read(dut, 0x300)) == 1
+    assert (await _axil_read(dut, 0x334)) == 1
+    assert (await _axil_read(dut, 0x518)) == 1
+
+    # Write any value to 0x5FC → clear
+    dut.s_axil_awaddr.value  = 0x5FC
+    dut.s_axil_awvalid.value = 1
+    dut.s_axil_wdata.value   = 0xDEAD
+    dut.s_axil_wvalid.value  = 1
+    for _ in range(30):
+        await RisingEdge(dut.clk)
+        if int(dut.s_axil_bvalid.value) == 1:
+            break
+    dut.s_axil_awvalid.value = 0
+    dut.s_axil_wvalid.value  = 0
+    for _ in range(5):
+        await RisingEdge(dut.clk)
+
+    # All counters now zero
+    for offset in (0x300, 0x304, 0x308, 0x31C, 0x334, 0x518):
+        c = await _axil_read(dut, offset)
+        assert c == 0, f"Counter 0x{offset:03X} should be 0 after 0x5FC clear; got {c}"
 
 
 @cocotb.test()

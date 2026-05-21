@@ -10,13 +10,19 @@
 // 32 B RDMA header starts at frame byte 14 (immediately after L2):
 //   byte 14 = opcode             — tdata[119:112]
 //   byte 15 = version_flags      — tdata[127:120]
-//   bytes 16-17 = tag
-//   bytes 18-21 = length (BE)
-//   bytes 22-25 = seq (BE)
-//   bytes 26-29 = rkey (BE)
-//   bytes 30-37 = remote_offset (BE)
-//   bytes 38-41 = imm_data (BE)
-//   bytes 42-45 = header_cksum (BE)
+//   bytes 16-17 = tag (LE)
+//   bytes 18-21 = length (LE)
+//   bytes 22-25 = seq (LE)
+//   bytes 26-29 = rkey (LE)
+//   bytes 30-37 = remote_offset (LE)
+//   bytes 38-41 = imm_data (LE)
+//   bytes 42-45 = header_cksum (LE)
+//
+// Wire encoding is little-endian per tt-rdma-wire-protocol-v1.md §1
+// ("Fixed 32-byte header, little-endian") and confirmed by the hex
+// examples in §7 (length=64 → bytes `40 00 00 00`; rkey=0xDEADBEEF →
+// bytes `EF BE AD DE`).  An earlier draft of this parser assumed BE
+// (network byte order) — every multi-byte field came out byte-swapped.
 //
 // Phase B only consumes the opcode byte.  Header field extraction for
 // MR lookup and DMA-engine routing lands in P1/P3.  Unknown-opcode
@@ -63,26 +69,18 @@ module rdma_hdr_parser (
 
   // RDMA header lives at frame bytes 14..45.  Byte N → tdata[8*N+7:8*N].
   //
-  // Multi-byte fields on the wire are big-endian (network byte order);
-  // we expose them as the natural integer value the host SDK uses.
-  // E.g., length field bytes 18..21 = {b18, b19, b20, b21} on the wire
-  // produces the host-readable u32 value with b18 as MSB.
-  wire [7:0]  opcode_w        = s_axis_tdata[119:112];
-  wire [7:0]  version_flags_w = s_axis_tdata[127:120];
-  wire [15:0] tag_w           = {s_axis_tdata[135:128], s_axis_tdata[143:136]};
-  wire [31:0] length_w        = {s_axis_tdata[151:144], s_axis_tdata[159:152],
-                                 s_axis_tdata[167:160], s_axis_tdata[175:168]};
-  wire [31:0] seq_w           = {s_axis_tdata[183:176], s_axis_tdata[191:184],
-                                 s_axis_tdata[199:192], s_axis_tdata[207:200]};
-  wire [31:0] rkey_w          = {s_axis_tdata[215:208], s_axis_tdata[223:216],
-                                 s_axis_tdata[231:224], s_axis_tdata[239:232]};
-  // remote_offset is 8 bytes BE at frame bytes 30..37 (tdata bits 247..311)
-  wire [63:0] remote_offset_w = {s_axis_tdata[247:240], s_axis_tdata[255:248],
-                                 s_axis_tdata[263:256], s_axis_tdata[271:264],
-                                 s_axis_tdata[279:272], s_axis_tdata[287:280],
-                                 s_axis_tdata[295:288], s_axis_tdata[303:296]};
-  wire [31:0] imm_data_w      = {s_axis_tdata[311:304], s_axis_tdata[319:312],
-                                 s_axis_tdata[327:320], s_axis_tdata[335:328]};
+  // The AXI-Stream tdata bus is byte-LE: byte 0 sits at bits[7:0], byte 1 at
+  // bits[15:8], etc.  Combined with the LE wire format, a multi-byte field
+  // starting at wire byte N occupies the natural contiguous bit range
+  // tdata[8*(N+W)-1 : 8*N] for a W-byte field — no shuffling required.
+  wire [7:0]  opcode_w        = s_axis_tdata[119:112];          // byte 14
+  wire [7:0]  version_flags_w = s_axis_tdata[127:120];          // byte 15
+  wire [15:0] tag_w           = s_axis_tdata[143:128];          // bytes 16..17
+  wire [31:0] length_w        = s_axis_tdata[175:144];          // bytes 18..21
+  wire [31:0] seq_w           = s_axis_tdata[207:176];          // bytes 22..25
+  wire [31:0] rkey_w          = s_axis_tdata[239:208];          // bytes 26..29
+  wire [63:0] remote_offset_w = s_axis_tdata[303:240];          // bytes 30..37
+  wire [31:0] imm_data_w      = s_axis_tdata[335:304];          // bytes 38..41
 
   always_ff @(posedge clk) begin
     if (!rst_n) begin

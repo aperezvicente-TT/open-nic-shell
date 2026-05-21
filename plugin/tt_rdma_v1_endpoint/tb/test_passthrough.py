@@ -29,7 +29,8 @@ async def _reset(dut, cycles=5):
     for _ in range(cycles):
         await RisingEdge(dut.clk)
     dut.rst_n.value = 1
-    for _ in range(2):
+    # Wait for generic_reset (RESET_DURATION + S_FLUSH window) to settle.
+    for _ in range(20):
         await RisingEdge(dut.clk)
 
 
@@ -63,13 +64,13 @@ async def test_version_register_reads_correctly(dut):
 
 
 @cocotb.test()
-async def test_mtu_default_is_9000(dut):
-    """cfg_mtu reset must be 9000 — bridge session lesson, do not silently regress."""
+async def test_mtu_default_is_4080(dut):
+    """cfg_mtu reset must be 4080 — bridge session lesson, do not silently regress."""
     cocotb.start_soon(Clock(dut.clk, CLK_NS, units="ns").start())
     await _reset(dut)
     mtu = await _axil_read(dut, 0x024)
-    assert (mtu & 0xFFFF) == 9000, \
-        (f"cfg_mtu expected 9000 (jumbo default), got {mtu & 0xFFFF}. "
+    assert (mtu & 0xFFFF) == 4080, \
+        (f"cfg_mtu expected 4080 (jumbo default), got {mtu & 0xFFFF}. "
          "Do NOT lower it to 1500 — bridge session lost a full rebuild "
          "cycle to every 1542 B encap'd frame being silently dropped.")
 
@@ -82,6 +83,32 @@ async def test_ethertype_default_is_0x1AF6(dut):
     et = await _axil_read(dut, 0x020)
     assert (et & 0xFFFF) == 0x1AF6, \
         f"cfg_ethertype expected 0x1AF6, got 0x{et:04X}"
+
+
+@cocotb.test()
+async def test_ethertype_is_readonly_locked(dut):
+    """0x020 is locked per README:111.  A write must NOT change the read
+    value — a stale bring-up tool cannot retarget the classifier."""
+    cocotb.start_soon(Clock(dut.clk, CLK_NS, units="ns").start())
+    await _reset(dut)
+
+    # Try to corrupt the ethertype register
+    dut.s_axil_awaddr.value  = 0x020
+    dut.s_axil_awvalid.value = 1
+    dut.s_axil_wdata.value   = 0x1234
+    dut.s_axil_wvalid.value  = 1
+    for _ in range(20):
+        await RisingEdge(dut.clk)
+        if int(dut.s_axil_bvalid.value) == 1:
+            break
+    dut.s_axil_awvalid.value = 0
+    dut.s_axil_wvalid.value  = 0
+    for _ in range(5):
+        await RisingEdge(dut.clk)
+
+    et = await _axil_read(dut, 0x020)
+    assert (et & 0xFFFF) == 0x1AF6, \
+        f"ETHERTYPE must stay locked at 0x1AF6 after a hostile write; got 0x{et:04X}"
 
 
 @cocotb.test()

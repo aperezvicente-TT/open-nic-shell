@@ -58,9 +58,12 @@ module tb_top (
 );
 
   tt_rdma_v1_endpoint_250mhz #(
-    .CMAC0_ID      (0),
-    .CMAC1_ID      (1),
-    .NUM_CMAC_PORT (2)
+    .CMAC0_ID       (0),
+    .CMAC1_ID       (1),
+    .NUM_CMAC_PORT  (2),
+    // Short reset window so cocotb's 5-cycle deassert pattern doesn't waste
+    // 100+ idle clocks per test waiting for generic_reset to fall through.
+    .RESET_DURATION (2)
   ) dut (
     .s_axil_awvalid              (s_axil_awvalid),
     .s_axil_awaddr               (s_axil_awaddr),
@@ -115,9 +118,10 @@ module tb_top (
     .m_axis_ring_push_tuser_slot (m_axis_ring_push_tuser_slot),
     .m_axis_ring_push_tready     (m_axis_ring_push_tready),
 
+    .mod_rstn                    (rst_n),
+    .mod_rst_done                (),     // observable but not asserted in TB
     .axis_aclk                   (clk),
-    .axil_aclk                   (clk),
-    .rst_n                       (rst_n)
+    .axil_aclk                   (clk)
   );
 
 endmodule : tb_top

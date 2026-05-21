@@ -8,6 +8,9 @@ initial begin
 end
 
 localparam C_NUM_USER_BLOCK = 1;
+// Block 0 = the endpoint plugin (drives mod_rst_done[0] from its generic_reset).
+// Blocks 1..15 are unused — tie their rst_done bits high so the shell
+// AND-reduce in system_config_register.v sees them as ready.
 assign mod_rst_done[15:C_NUM_USER_BLOCK] = {(16-C_NUM_USER_BLOCK){1'b1}};
 
 // QDMA H2C: drain (no host TX into the endpoint yet)
@@ -93,7 +96,9 @@ tt_rdma_v1_endpoint_250mhz #(
   .m_axis_cmac1_tx_tuser_size        (m_axis_adap_tx_250mhz_tuser_size[31:16]),
   .m_axis_cmac1_tx_tready            (m_axis_adap_tx_250mhz_tready[1]),
 
+  .mod_rstn                          (mod_rstn[0]),
+  .mod_rst_done                      (mod_rst_done[0]),
+
   .axil_aclk                         (axil_aclk),
-  .axis_aclk                         (axis_aclk),
-  .rst_n                             (mod_rstn[0])
+  .axis_aclk                         (axis_aclk)
 );

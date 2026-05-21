@@ -13,9 +13,10 @@
 //   2. Every TX beat we ever emit on CMAC0 has tuser_dst[CMAC0_ID+6]=1
 //      so packet_adapter_tx.sv:116 never silently drops a frame.  An SV
 //      assertion fires in simulation if we ever forget.
-//   3. cfg_mtu defaults to 9000, not 1500 — bridge default-1500 cost us
-//      a full rebuild cycle when 1542-byte encap'd frames silently hit
-//      tx_oversize.
+//   3. cfg_mtu defaults to 4080 (validated jumbo, README:91), not 1500 —
+//      bridge default-1500 cost us a full rebuild cycle when 1542-byte
+//      encap'd frames silently hit tx_oversize.  9216 hangs CMAC TX so
+//      we stay at the proven point until P7 sweeps the ceiling.
 //   4. Unused CMAC1 streams and QDMA H2C/C2H ports are tied off cleanly.
 //
 // Wire path goal (later phases):
@@ -30,9 +31,13 @@
 `timescale 1ns/1ps
 
 module tt_rdma_v1_endpoint_250mhz #(
-  parameter int CMAC0_ID      = 0,
-  parameter int CMAC1_ID      = 1,
-  parameter int NUM_CMAC_PORT = 2
+  parameter int CMAC0_ID       = 0,
+  parameter int CMAC1_ID       = 1,
+  parameter int NUM_CMAC_PORT  = 2,
+  // Cycles the local reset stays asserted after mod_rstn release.
+  // Production default matches the shell's other plugins; TBs override
+  // to a small value so cocotb tests don't burn 100+ idle clocks.
+  parameter int RESET_DURATION = 100
 ) (
   // AXI-Lite slave (CSR)
   input  wire         s_axil_awvalid,
@@ -93,16 +98,43 @@ module tt_rdma_v1_endpoint_250mhz #(
   output wire  [15:0] m_axis_ring_push_tuser_slot,
   input  wire         m_axis_ring_push_tready,
 
+  // Shell reset interface — async-deasserted mod_rstn in, sync rst-done out.
+  // The shell AND-reduces mod_rst_done across all user blocks to produce
+  // system_rst_done.  Leaving this undriven hangs the entire driver bring-up.
+  input  wire         mod_rstn,
+  output wire         mod_rst_done,
+
   input  wire         axis_aclk,
-  input  wire         axil_aclk,
-  input  wire         rst_n
+  input  wire         axil_aclk
 );
+
+  // Synchronize the async-deasserted mod_rstn and produce the shell-visible
+  // `mod_rst_done`.  generic_reset's multi-clock mode depends on Xilinx-only
+  // xpm_cdc primitives that don't simulate cleanly under Verilator, so we
+  // stay at NUM_INPUT_CLK=1 (axis-domain) and re-sync into axil ourselves.
+  wire axis_rst_n;
+  generic_reset #(
+    .NUM_INPUT_CLK  (1),
+    .RESET_DURATION (RESET_DURATION)
+  ) reset_inst (
+    .mod_rstn     (mod_rstn),
+    .mod_rst_done (mod_rst_done),
+    .clk          (axis_aclk),
+    .rstn         (axis_rst_n)
+  );
+
+  // 2FF synchronize the axis-domain reset into axil_aclk.
+  wire axil_rst_n;
+  cdc_bit_sync axil_rst_sync_inst (
+    .src_in   (axis_rst_n),
+    .dest_clk (axil_aclk),
+    .dest_out (axil_rst_n)
+  );
 
   // CSR config wires
   wire [31:0] cfg_ctrl;
   wire [47:0] cfg_local_mac;
   wire [47:0] cfg_peer_mac;
-  wire [15:0] cfg_ethertype;
   wire [15:0] cfg_mtu;
   wire [31:0] cfg_pfc;
 
@@ -122,12 +154,62 @@ module tt_rdma_v1_endpoint_250mhz #(
   wire [63:0] hdr_remote_offset;
   wire [31:0] hdr_imm_data;
 
-  // Phase C ring publisher
-  wire [31:0] rx_prod_idx_live;
-  wire [31:0] cfg_rx_cons_idx;
+  // Phase C ring publisher — axis-domain signals plus their axil-side images
   wire [31:0] cfg_rx_ring_base_lo, cfg_rx_ring_base_hi;
   wire [31:0] cfg_rx_ring_log2n, cfg_rx_slot_stride;
-  wire        overflow_drop_pulse;
+
+  // axis-domain raw signals (consumed by rdma_rx_ring + classifier/parser)
+  wire [31:0] rx_prod_idx_axis;
+  wire [31:0] cfg_rx_cons_idx_axis;
+  wire        ring_full_drop_pulse_axis;
+  wire        backpressure_drop_pulse_axis;
+
+  // axil-domain images visible to rdma_regs.  Pulse counters are CDC'd
+  // pulse→pulse; the cons_idx is gray-counter CDC'd axil→axis; the
+  // prod_idx is gray-counter CDC'd axis→axil for safe CSR read.
+  wire [31:0] rx_prod_idx_live;
+  wire [31:0] cfg_rx_cons_idx_axil;
+
+  // Each axis-domain opcode pulse gets a toggle-sync into axil so the
+  // counters in rdma_regs see one increment per actual frame.
+  wire op_send_pulse_axil, op_send_imm_pulse_axil;
+  wire op_write_pulse_axil, op_write_imm_pulse_axil;
+  wire op_read_req_pulse_axil, op_read_resp_pulse_axil;
+  wire op_ack_pulse_axil, op_control_pulse_axil, op_unknown_pulse_axil;
+  wire legacy_link_pulse_axil, ethtype_drop_pulse_axil;
+  wire ring_full_drop_pulse_axil;
+  wire backpressure_drop_pulse_axil;
+
+  cdc_pulse_sync u_psync_send       (.src_clk(axis_aclk), .src_rst_n(axis_rst_n), .src_pulse(op_send_pulse),       .dest_clk(axil_aclk), .dest_rst_n(axil_rst_n), .dest_pulse(op_send_pulse_axil));
+  cdc_pulse_sync u_psync_send_imm   (.src_clk(axis_aclk), .src_rst_n(axis_rst_n), .src_pulse(op_send_imm_pulse),   .dest_clk(axil_aclk), .dest_rst_n(axil_rst_n), .dest_pulse(op_send_imm_pulse_axil));
+  cdc_pulse_sync u_psync_write      (.src_clk(axis_aclk), .src_rst_n(axis_rst_n), .src_pulse(op_write_pulse),      .dest_clk(axil_aclk), .dest_rst_n(axil_rst_n), .dest_pulse(op_write_pulse_axil));
+  cdc_pulse_sync u_psync_write_imm  (.src_clk(axis_aclk), .src_rst_n(axis_rst_n), .src_pulse(op_write_imm_pulse),  .dest_clk(axil_aclk), .dest_rst_n(axil_rst_n), .dest_pulse(op_write_imm_pulse_axil));
+  cdc_pulse_sync u_psync_read_req   (.src_clk(axis_aclk), .src_rst_n(axis_rst_n), .src_pulse(op_read_req_pulse),   .dest_clk(axil_aclk), .dest_rst_n(axil_rst_n), .dest_pulse(op_read_req_pulse_axil));
+  cdc_pulse_sync u_psync_read_resp  (.src_clk(axis_aclk), .src_rst_n(axis_rst_n), .src_pulse(op_read_resp_pulse),  .dest_clk(axil_aclk), .dest_rst_n(axil_rst_n), .dest_pulse(op_read_resp_pulse_axil));
+  cdc_pulse_sync u_psync_ack        (.src_clk(axis_aclk), .src_rst_n(axis_rst_n), .src_pulse(op_ack_pulse),        .dest_clk(axil_aclk), .dest_rst_n(axil_rst_n), .dest_pulse(op_ack_pulse_axil));
+  cdc_pulse_sync u_psync_control    (.src_clk(axis_aclk), .src_rst_n(axis_rst_n), .src_pulse(op_control_pulse),    .dest_clk(axil_aclk), .dest_rst_n(axil_rst_n), .dest_pulse(op_control_pulse_axil));
+  cdc_pulse_sync u_psync_unknown    (.src_clk(axis_aclk), .src_rst_n(axis_rst_n), .src_pulse(op_unknown_pulse),    .dest_clk(axil_aclk), .dest_rst_n(axil_rst_n), .dest_pulse(op_unknown_pulse_axil));
+  cdc_pulse_sync u_psync_legacy     (.src_clk(axis_aclk), .src_rst_n(axis_rst_n), .src_pulse(legacy_link_pulse),   .dest_clk(axil_aclk), .dest_rst_n(axil_rst_n), .dest_pulse(legacy_link_pulse_axil));
+  cdc_pulse_sync u_psync_drop       (.src_clk(axis_aclk), .src_rst_n(axis_rst_n), .src_pulse(ethtype_drop_pulse),  .dest_clk(axil_aclk), .dest_rst_n(axil_rst_n), .dest_pulse(ethtype_drop_pulse_axil));
+  cdc_pulse_sync u_psync_ring_full  (.src_clk(axis_aclk), .src_rst_n(axis_rst_n), .src_pulse(ring_full_drop_pulse_axis),    .dest_clk(axil_aclk), .dest_rst_n(axil_rst_n), .dest_pulse(ring_full_drop_pulse_axil));
+  cdc_pulse_sync u_psync_c2h_bp     (.src_clk(axis_aclk), .src_rst_n(axis_rst_n), .src_pulse(backpressure_drop_pulse_axis), .dest_clk(axil_aclk), .dest_rst_n(axil_rst_n), .dest_pulse(backpressure_drop_pulse_axil));
+
+  // Counter sync — both are monotonically incrementing so gray is safe.
+  cdc_counter_sync #(.WIDTH(32)) u_prod_idx_sync (
+    .src_clk(axis_aclk),  .src_rst_n(axis_rst_n),  .src_count(rx_prod_idx_axis),
+    .dest_clk(axil_aclk), .dest_rst_n(axil_rst_n), .dest_count(rx_prod_idx_live)
+  );
+  cdc_counter_sync #(.WIDTH(32)) u_cons_idx_sync (
+    .src_clk(axil_aclk), .src_rst_n(axil_rst_n), .src_count(cfg_rx_cons_idx_axil),
+    .dest_clk(axis_aclk), .dest_rst_n(axis_rst_n), .dest_count(cfg_rx_cons_idx_axis)
+  );
+
+  // Other config wires (mtu/ethertype/pfc/mac/ring_base/log2n/stride) are
+  // axil-domain registers that change only during bring-up; consumers in
+  // the axis domain see them as quasi-static.  Each consumer that actually
+  // reads them in axis_aclk should apply a 2FF synchronizer at the point
+  // of use (the classifier and parser currently don't read cfg signals —
+  // ethertype/opcode bytes come from the wire, not from CSR).
 
   rdma_regs regs_inst (
     .s_axil_awvalid (s_axil_awvalid),
@@ -150,34 +232,36 @@ module tt_rdma_v1_endpoint_250mhz #(
     .cfg_ctrl              (cfg_ctrl),
     .cfg_local_mac         (cfg_local_mac),
     .cfg_peer_mac          (cfg_peer_mac),
-    .cfg_ethertype         (cfg_ethertype),
     .cfg_mtu               (cfg_mtu),
     .cfg_pfc               (cfg_pfc),
     .status_link_up        (1'b0),
     .status_mr_table_ready (1'b0),
 
-    .pulse_op_send         (op_send_pulse),
-    .pulse_op_send_imm     (op_send_imm_pulse),
-    .pulse_op_write        (op_write_pulse),
-    .pulse_op_write_imm    (op_write_imm_pulse),
-    .pulse_op_read_req     (op_read_req_pulse),
-    .pulse_op_read_resp    (op_read_resp_pulse),
-    .pulse_op_ack          (op_ack_pulse),
-    .pulse_op_control      (op_control_pulse),
-    .pulse_op_unknown      (op_unknown_pulse),
-    .pulse_ethtype_drop    (ethtype_drop_pulse),
-    .pulse_ethtype_legacy  (legacy_link_pulse),
-    .pulse_rx_overflow     (overflow_drop_pulse),
+    // All counter pulses arrive pre-synchronized into axil_aclk so the
+    // accumulators in rdma_regs run safely off a single clock.
+    .pulse_op_send         (op_send_pulse_axil),
+    .pulse_op_send_imm     (op_send_imm_pulse_axil),
+    .pulse_op_write        (op_write_pulse_axil),
+    .pulse_op_write_imm    (op_write_imm_pulse_axil),
+    .pulse_op_read_req     (op_read_req_pulse_axil),
+    .pulse_op_read_resp    (op_read_resp_pulse_axil),
+    .pulse_op_ack          (op_ack_pulse_axil),
+    .pulse_op_control      (op_control_pulse_axil),
+    .pulse_op_unknown      (op_unknown_pulse_axil),
+    .pulse_ethtype_drop    (ethtype_drop_pulse_axil),
+    .pulse_ethtype_legacy  (legacy_link_pulse_axil),
+    .pulse_rx_overflow     (ring_full_drop_pulse_axil),
+    .pulse_rx_c2h_bp_drop  (backpressure_drop_pulse_axil),
 
     .cfg_rx_ring_base_lo   (cfg_rx_ring_base_lo),
     .cfg_rx_ring_base_hi   (cfg_rx_ring_base_hi),
     .cfg_rx_ring_log2n     (cfg_rx_ring_log2n),
     .cfg_rx_slot_stride    (cfg_rx_slot_stride),
     .rx_prod_idx_live      (rx_prod_idx_live),
-    .cfg_rx_cons_idx       (cfg_rx_cons_idx),
+    .cfg_rx_cons_idx       (cfg_rx_cons_idx_axil),
 
     .aclk                  (axil_aclk),
-    .rst_n                 (rst_n)
+    .rst_n                 (axil_rst_n)
   );
 
   // ── Phase B: classifier + opcode dispatch (snoop, no data-path block) ──
@@ -185,6 +269,7 @@ module tt_rdma_v1_endpoint_250mhz #(
   // The data path is unchanged — frames continue to flow through the
   // skid buffer to CMAC0 TX.  Engines (Phase B+) will replace that
   // passthrough when they're built.
+  wire classifier_is_beat0;
   rdma_rx_classifier classifier_inst (
     .s_axis_tvalid       (s_axis_cmac0_rx_tvalid),
     .s_axis_tdata        (s_axis_cmac0_rx_tdata),
@@ -193,24 +278,24 @@ module tt_rdma_v1_endpoint_250mhz #(
     .rdma_v1_pulse       (rdma_v1_pulse),
     .legacy_link_pulse   (legacy_link_pulse),
     .ethtype_drop_pulse  (ethtype_drop_pulse),
+    .is_beat0_w          (classifier_is_beat0),
     .clk                 (axis_aclk),
-    .rst_n               (rst_n)
+    .rst_n               (axis_rst_n)
   );
 
-  // Parser is gated by rdma_v1_pulse: only TT-RDMA-v1 frames get
-  // opcode-dispatched.  Note: rdma_v1_pulse is registered (one cycle
-  // after the beat), so we need the same-cycle tdata.  Easiest:
-  // re-register beat-0 tdata into a small holding latch.  But because
-  // the classifier already registered the pulse from the matched
-  // beat, by the time rdma_v1_pulse is high the tdata bus may have
-  // moved on.  Mitigation: latch beat-0 tdata one cycle (combinational
-  // capture) and feed it to the parser alongside the registered
-  // rdma_v1_pulse.
+  // Beat-0 tdata holding latch.  The parser fires one cycle after
+  // rdma_v1_pulse goes high, so we need to preserve beat-0 tdata across
+  // that single-cycle gap.  Critically: only capture when the firing
+  // beat is genuinely beat-0 (classifier_is_beat0 high) — otherwise a
+  // multi-beat frame's later beats would overwrite the latch and the
+  // parser would see a non-header byte stream.  This was M1 from the
+  // Phase-C review (correctness preserved by NBA before, fragile).
   reg [511:0] beat0_tdata_q;
   always_ff @(posedge axis_aclk) begin
-    if (!rst_n) begin
+    if (!axis_rst_n) begin
       beat0_tdata_q <= '0;
-    end else if (s_axis_cmac0_rx_tvalid && s_axis_cmac0_rx_tready) begin
+    end else if (s_axis_cmac0_rx_tvalid && s_axis_cmac0_rx_tready
+                 && classifier_is_beat0) begin
       beat0_tdata_q <= s_axis_cmac0_rx_tdata;
     end
   end
@@ -236,7 +321,7 @@ module tt_rdma_v1_endpoint_250mhz #(
     .hdr_remote_offset   (hdr_remote_offset),
     .hdr_imm_data        (hdr_imm_data),
     .clk                 (axis_aclk),
-    .rst_n               (rst_n)
+    .rst_n               (axis_rst_n)
   );
 
   // ── Phase C: RxWqeRing publish ─────────────────────────────────────────
@@ -247,21 +332,23 @@ module tt_rdma_v1_endpoint_250mhz #(
   ) rx_ring_inst (
     .op_send_pulse              (op_send_pulse),
     .op_send_imm_pulse           (op_send_imm_pulse),
+    .op_write_imm_pulse          (op_write_imm_pulse),
     .hdr_opcode                  (hdr_opcode),
     .hdr_length                  (hdr_length),
     .hdr_seq                     (hdr_seq),
     .hdr_imm_data                (hdr_imm_data),
-    .cfg_rx_cons_idx             (cfg_rx_cons_idx),
+    .cfg_rx_cons_idx             (cfg_rx_cons_idx_axis),
     .m_axis_ring_push_tvalid     (m_axis_ring_push_tvalid),
     .m_axis_ring_push_tdata      (m_axis_ring_push_tdata),
     .m_axis_ring_push_tkeep      (m_axis_ring_push_tkeep),
     .m_axis_ring_push_tlast      (m_axis_ring_push_tlast),
     .m_axis_ring_push_tuser_slot (m_axis_ring_push_tuser_slot),
     .m_axis_ring_push_tready     (m_axis_ring_push_tready),
-    .prod_idx                    (rx_prod_idx_live),
-    .overflow_drop_pulse         (overflow_drop_pulse),
+    .prod_idx                    (rx_prod_idx_axis),
+    .ring_full_drop_pulse        (ring_full_drop_pulse_axis),
+    .backpressure_drop_pulse     (backpressure_drop_pulse_axis),
     .clk                         (axis_aclk),
-    .rst_n                       (rst_n)
+    .rst_n                       (axis_rst_n)
   );
 
   // Phase A: CMAC0 RX → CMAC0 TX passthrough.  No opcode dispatch yet
@@ -281,7 +368,7 @@ module tt_rdma_v1_endpoint_250mhz #(
   assign s_axis_cmac0_rx_tready = can_load;
 
   always_ff @(posedge axis_aclk) begin
-    if (!rst_n) begin
+    if (!axis_rst_n) begin
       skid_tvalid     <= 1'b0;
       skid_tdata      <= '0;
       skid_tkeep      <= '0;

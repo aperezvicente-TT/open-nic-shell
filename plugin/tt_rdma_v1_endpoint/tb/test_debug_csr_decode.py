@@ -40,7 +40,8 @@ async def _reset(dut, cycles=5):
     for _ in range(cycles):
         await RisingEdge(dut.clk)
     dut.rst_n.value = 1
-    for _ in range(2):
+    # Wait for generic_reset (RESET_DURATION + S_FLUSH window) to settle.
+    for _ in range(20):
         await RisingEdge(dut.clk)
 
 
