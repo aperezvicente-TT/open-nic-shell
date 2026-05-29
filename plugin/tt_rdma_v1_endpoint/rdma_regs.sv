@@ -15,7 +15,11 @@
 // CSR map (BAR2 + plugin base):
 //   0x000  VERSION         (RO)  : 0x0001_0000 — major.minor = 1.0
 //   0x004  SCRATCH         (RW)  : probe
-//   0x008  CTRL            (RW)  : bit0 ep_enable, bit1 auto_ack, bit2 pfc_en
+//   0x008  CTRL            (RW)  : bit0 ep_enable, bit1 auto_ack, bit2 pfc_en,
+//                                  bit3 cksum_check_en (default 0 — gates the
+//                                  header CRC32C validate path in rdma_hdr_parser;
+//                                  matches today's WH FW ecosystem which doesn't
+//                                  compute header_cksum on TX).
 //   0x00C  STATUS          (RO)  : bit0 link_up, bit1 mr_table_ready
 //   0x010  LOCAL_MAC_HI    (RW)
 //   0x014  LOCAL_MAC_LO    (RW)
@@ -89,6 +93,7 @@ module rdma_regs (
   input  wire         pulse_ethtype_legacy,  // 0x518 (sits in the 0x500 dbg block; legacy soak counter)
   input  wire         pulse_rx_overflow,     // 0x058 — host ring exhausted (prod-cons >= depth)
   input  wire         pulse_rx_c2h_bp_drop,  // 0x05C — downstream C2H/QDMA stalled mid-beat
+  input  wire         pulse_hdr_cksum_fail,  // 0x330 — header CRC32C mismatch (only when CTRL.bit3=1)
 
   // Phase C RxWqeRing config + status
   output reg  [31:0]  cfg_rx_ring_base_lo,
@@ -123,6 +128,7 @@ module rdma_regs (
   reg [31:0] cnt_ethtype_legacy;
   reg [31:0] cnt_rx_overflow;
   reg [31:0] cnt_rx_c2h_bp_drop;
+  reg [31:0] cnt_hdr_cksum_fail;
 
   // One-cycle pulse: a write to 0x5FC clears all the 0x300+/0x500 counters.
   reg        clear_all_counters;
@@ -161,6 +167,7 @@ module rdma_regs (
       cnt_ethtype_legacy <= '0;
       cnt_rx_overflow    <= '0;
       cnt_rx_c2h_bp_drop <= '0;
+      cnt_hdr_cksum_fail <= '0;
 
       cfg_rx_ring_base_lo <= '0;
       cfg_rx_ring_base_hi <= '0;
@@ -188,6 +195,7 @@ module rdma_regs (
         cnt_ethtype_legacy <= '0;
         cnt_rx_overflow    <= '0;
         cnt_rx_c2h_bp_drop <= '0;
+        cnt_hdr_cksum_fail <= '0;
       end else begin
         if (pulse_op_send)        cnt_op_send        <= cnt_op_send        + 1;
         if (pulse_op_send_imm)    cnt_op_send_imm    <= cnt_op_send_imm    + 1;
@@ -202,6 +210,7 @@ module rdma_regs (
         if (pulse_ethtype_legacy) cnt_ethtype_legacy <= cnt_ethtype_legacy + 1;
         if (pulse_rx_overflow)    cnt_rx_overflow    <= cnt_rx_overflow    + 1;
         if (pulse_rx_c2h_bp_drop) cnt_rx_c2h_bp_drop <= cnt_rx_c2h_bp_drop + 1;
+        if (pulse_hdr_cksum_fail) cnt_hdr_cksum_fail <= cnt_hdr_cksum_fail + 1;
       end
       if (s_axil_bvalid && s_axil_bready) s_axil_bvalid <= 1'b0;
       if (s_axil_rvalid && s_axil_rready) s_axil_rvalid <= 1'b0;
@@ -283,7 +292,7 @@ module rdma_regs (
           12'h324: s_axil_rdata <= 32'h0;          // rkey_miss     — wires in P1
           12'h328: s_axil_rdata <= 32'h0;          // rkey_access   — P1
           12'h32C: s_axil_rdata <= 32'h0;          // rkey_bounds   — P1
-          12'h330: s_axil_rdata <= 32'h0;          // hdr_cksum_fail — P1 / Phase R
+          12'h330: s_axil_rdata <= cnt_hdr_cksum_fail;
           12'h334: s_axil_rdata <= cnt_ethtype_drop;
           12'h338: s_axil_rdata <= 32'h0;          // bad_dst_drop  — drives in tx_arbiter (P5)
           12'h33C: s_axil_rdata <= 32'h0;          // qdma_wr_err   — P1

@@ -145,6 +145,9 @@ module tt_rdma_v1_endpoint_250mhz #(
   wire op_send_pulse, op_send_imm_pulse, op_write_pulse, op_write_imm_pulse;
   wire op_read_req_pulse, op_read_resp_pulse, op_ack_pulse, op_control_pulse;
   wire op_unknown_pulse;
+  wire hdr_cksum_fail_pulse;          // axis-domain
+  wire hdr_cksum_fail_pulse_axil;     // axil-domain, into rdma_regs
+  wire cksum_check_en_axis;           // cfg_ctrl[3] CDC'd from axil to axis
   wire  [7:0] hdr_opcode;
   wire  [7:0] hdr_version_flags;
   wire [15:0] hdr_tag;
@@ -193,6 +196,11 @@ module tt_rdma_v1_endpoint_250mhz #(
   cdc_pulse_sync u_psync_drop       (.src_clk(axis_aclk), .src_rst_n(axis_rst_n), .src_pulse(ethtype_drop_pulse),  .dest_clk(axil_aclk), .dest_rst_n(axil_rst_n), .dest_pulse(ethtype_drop_pulse_axil));
   cdc_pulse_sync u_psync_ring_full  (.src_clk(axis_aclk), .src_rst_n(axis_rst_n), .src_pulse(ring_full_drop_pulse_axis),    .dest_clk(axil_aclk), .dest_rst_n(axil_rst_n), .dest_pulse(ring_full_drop_pulse_axil));
   cdc_pulse_sync u_psync_c2h_bp     (.src_clk(axis_aclk), .src_rst_n(axis_rst_n), .src_pulse(backpressure_drop_pulse_axis), .dest_clk(axil_aclk), .dest_rst_n(axil_rst_n), .dest_pulse(backpressure_drop_pulse_axil));
+  cdc_pulse_sync u_psync_cksum_fail (.src_clk(axis_aclk), .src_rst_n(axis_rst_n), .src_pulse(hdr_cksum_fail_pulse),         .dest_clk(axil_aclk), .dest_rst_n(axil_rst_n), .dest_pulse(hdr_cksum_fail_pulse_axil));
+
+  // CTRL.cksum_check_en (axil bit) → 2FF synchronizer → axis-domain parser.
+  // Level signal, changes only via host CSR write at bring-up — 2FF is enough.
+  cdc_bit_sync u_csync_cksum_en (.src_in(cfg_ctrl[3]), .dest_clk(axis_aclk), .dest_out(cksum_check_en_axis));
 
   // Counter sync — both are monotonically incrementing so gray is safe.
   cdc_counter_sync #(.WIDTH(32)) u_prod_idx_sync (
@@ -252,6 +260,7 @@ module tt_rdma_v1_endpoint_250mhz #(
     .pulse_ethtype_legacy  (legacy_link_pulse_axil),
     .pulse_rx_overflow     (ring_full_drop_pulse_axil),
     .pulse_rx_c2h_bp_drop  (backpressure_drop_pulse_axil),
+    .pulse_hdr_cksum_fail  (hdr_cksum_fail_pulse_axil),
 
     .cfg_rx_ring_base_lo   (cfg_rx_ring_base_lo),
     .cfg_rx_ring_base_hi   (cfg_rx_ring_base_hi),
@@ -303,6 +312,7 @@ module tt_rdma_v1_endpoint_250mhz #(
   rdma_hdr_parser parser_inst (
     .rdma_v1_frame_start (rdma_v1_pulse),
     .s_axis_tdata        (beat0_tdata_q),
+    .cksum_check_en      (cksum_check_en_axis),
     .op_send_pulse       (op_send_pulse),
     .op_send_imm_pulse   (op_send_imm_pulse),
     .op_write_pulse      (op_write_pulse),
@@ -312,6 +322,7 @@ module tt_rdma_v1_endpoint_250mhz #(
     .op_ack_pulse        (op_ack_pulse),
     .op_control_pulse    (op_control_pulse),
     .op_unknown_pulse    (op_unknown_pulse),
+    .hdr_cksum_fail_pulse(hdr_cksum_fail_pulse),
     .hdr_opcode          (hdr_opcode),
     .hdr_version_flags   (hdr_version_flags),
     .hdr_tag             (hdr_tag),

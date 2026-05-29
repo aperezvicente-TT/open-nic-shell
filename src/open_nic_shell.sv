@@ -1789,9 +1789,12 @@ module open_nic_shell #(
       .USE_PHYS_FUNC (USE_PHYS_FUNC),
       .NUM_PHYS_FUNC (NUM_PHYS_FUNC),
       .NUM_QUEUE     (NUM_QUEUE),
-`ifdef __rdma_enabled__
-      // Path γ: RDMA plugin arbitrates CMACs into slot 0 and tags absolute
-      // qid via s_axis_c2h_tuser_qid.  Bypass internal RSS computation.
+`ifdef __qdma_ext_qid__
+      // Path γ: a plugin arbitrates CMACs and tags absolute qid via
+      // s_axis_c2h_tuser_qid.  Bypass internal RSS computation.  Originally
+      // gated on __rdma_enabled__ for ERNIC; decoupled so any plugin
+      // (e.g. tt_rdma_v1_endpoint) can opt in without instantiating ERNIC.
+      // Set via -rdma 1 (legacy) or -ext_qid 1 (new) at build time.
       .EXT_QID       (1)
 `else
       .EXT_QID       (0)

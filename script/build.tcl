@@ -109,6 +109,7 @@ array set build_options {
     -sim  0
     -rdma        0
     -classifier  rtl
+    -ext_qid     0
 }
 set build_options(-user_plugin) ${plugin_dir}/p2p
 
@@ -392,6 +393,15 @@ if {$rdma} {
     append verilog_define " " "__rdma_enabled__"
     append verilog_define " " "__classifier_${classifier}__"
     puts "INFO: RDMA enabled with classifier=$classifier"
+}
+# __qdma_ext_qid__ enables the QDMA EXT_QID=1 mode so a plugin can drive
+# m_axis_qdma_c2h_tuser_qid deterministically (bypasses internal RSS).  This
+# was originally fused into __rdma_enabled__ for ERNIC; the tt_rdma_v1_endpoint
+# plugin needs it without pulling in ERNIC, so it's its own opt-in flag now.
+# Preserve backwards compat: -rdma 1 still implies it.
+if {$rdma || $ext_qid} {
+    append verilog_define " " "__qdma_ext_qid__"
+    puts "INFO: __qdma_ext_qid__ defined (plugin drives QDMA C2H tuser_qid)"
 }
 set_property verilog_define $verilog_define [current_fileset]
 

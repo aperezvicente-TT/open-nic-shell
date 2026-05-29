@@ -1,6 +1,7 @@
 // Instantiation shim for tt_rdma_v1_endpoint_250mhz inside box_250mhz.
 // NUM_CMAC_PORT must be 2 (CMAC0 = TT-facing; CMAC1 unused in v1 endpoint).
-// QDMA H2C/C2H are unused — pure endpoint, tied off here.
+// QDMA H2C is unused (drained).  QDMA C2H carries SEND/SEND_IMM ring slots
+// from the endpoint to host RAM via a pre-posted descriptor queue (P1 path).
 
 initial begin
   if (NUM_CMAC_PORT != 2)
@@ -16,15 +17,38 @@ assign mod_rst_done[15:C_NUM_USER_BLOCK] = {(16-C_NUM_USER_BLOCK){1'b1}};
 // QDMA H2C: drain (no host TX into the endpoint yet)
 assign s_axis_qdma_h2c_tready      = {NUM_PHYS_FUNC*NUM_QDMA{1'b1}};
 
-// QDMA C2H: tie off until the SEND-to-host-ring path lands (Phase C)
-assign m_axis_qdma_c2h_tvalid       = '0;
-assign m_axis_qdma_c2h_tdata        = '0;
-assign m_axis_qdma_c2h_tkeep        = '0;
-assign m_axis_qdma_c2h_tlast        = '0;
-assign m_axis_qdma_c2h_tuser_size   = '0;
+// ── QDMA C2H ST ← endpoint ring_push (SEND/SEND_IMM publish) ────────────────
+//
+// rdma_rx_ring.sv emits one 512-bit beat per ring slot (RING_SLOT_BYTES=64,
+// tlast=1, tkeep=all-1s).  Each beat becomes one C2H ST packet, consumed by
+// the host-posted descriptor at queue TT_RDMA_RX_RING_QID.  Host SDK must
+// pre-post enough descriptors to cover the burst (64-deep ring recommended).
+//
+// EXT_QID drives tuser_qid (depends on src/qdma_subsystem/qdma_subsystem.sv:26
+// build-time switch); we always drive it deterministically here regardless.
+//
+// NUM_PHYS_FUNC=1, NUM_QDMA=1 in this build → no per-PF/QDMA spread; if that
+// changes, this block needs replication or a small mux.
+localparam [10:0] TT_RDMA_RX_RING_QID  = 11'd0;
+localparam [15:0] TT_RDMA_RX_RING_SIZE = 16'd64;  // bytes per packet (one slot)
+
+wire         endpoint_ring_push_tvalid;
+wire [511:0] endpoint_ring_push_tdata;
+wire  [63:0] endpoint_ring_push_tkeep;
+wire         endpoint_ring_push_tlast;
+wire  [15:0] endpoint_ring_push_tuser_slot;  // observed in ILA only
+wire         endpoint_ring_push_tready;
+
+assign m_axis_qdma_c2h_tvalid       = endpoint_ring_push_tvalid;
+assign m_axis_qdma_c2h_tdata        = endpoint_ring_push_tdata;
+assign m_axis_qdma_c2h_tkeep        = endpoint_ring_push_tkeep;
+assign m_axis_qdma_c2h_tlast        = endpoint_ring_push_tlast;
+assign m_axis_qdma_c2h_tuser_size   = TT_RDMA_RX_RING_SIZE;
 assign m_axis_qdma_c2h_tuser_src    = '0;
 assign m_axis_qdma_c2h_tuser_dst    = '0;
 assign m_axis_qdma_c2h_tuser_ptp_ts = '0;
+assign m_axis_qdma_c2h_tuser_qid    = TT_RDMA_RX_RING_QID;
+assign endpoint_ring_push_tready    = m_axis_qdma_c2h_tready;
 
 // PTP tag on TX: tie off (no timestamping in v1 endpoint)
 assign m_axis_adap_tx_250mhz_tuser_ptp_tag = '0;
@@ -95,6 +119,14 @@ tt_rdma_v1_endpoint_250mhz #(
   .m_axis_cmac1_tx_tlast             (m_axis_adap_tx_250mhz_tlast[1]),
   .m_axis_cmac1_tx_tuser_size        (m_axis_adap_tx_250mhz_tuser_size[31:16]),
   .m_axis_cmac1_tx_tready            (m_axis_adap_tx_250mhz_tready[1]),
+
+  // Ring publish (SEND/SEND_IMM → QDMA C2H ST → host RAM)
+  .m_axis_ring_push_tvalid           (endpoint_ring_push_tvalid),
+  .m_axis_ring_push_tdata            (endpoint_ring_push_tdata),
+  .m_axis_ring_push_tkeep            (endpoint_ring_push_tkeep),
+  .m_axis_ring_push_tlast            (endpoint_ring_push_tlast),
+  .m_axis_ring_push_tuser_slot       (endpoint_ring_push_tuser_slot),
+  .m_axis_ring_push_tready           (endpoint_ring_push_tready),
 
   .mod_rstn                          (mod_rstn[0]),
   .mod_rst_done                      (mod_rst_done[0]),
