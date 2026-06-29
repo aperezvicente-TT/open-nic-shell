@@ -369,6 +369,7 @@ module open_nic_shell #(
   wire  [16*NUM_PHYS_FUNC*NUM_QDMA-1:0] axis_qdma_h2c_tuser_src;
   wire  [16*NUM_PHYS_FUNC*NUM_QDMA-1:0] axis_qdma_h2c_tuser_dst;
   wire  [16*NUM_PHYS_FUNC*NUM_QDMA-1:0] axis_qdma_h2c_tuser_ptp_tag;
+  wire  [11*NUM_PHYS_FUNC*NUM_QDMA-1:0] axis_qdma_h2c_tuser_qid;
   wire     [NUM_PHYS_FUNC*NUM_QDMA-1:0] axis_qdma_h2c_tready;
 
   wire     [NUM_PHYS_FUNC*NUM_QDMA-1:0] axis_qdma_c2h_tvalid;
@@ -379,6 +380,7 @@ module open_nic_shell #(
   wire  [16*NUM_PHYS_FUNC*NUM_QDMA-1:0] axis_qdma_c2h_tuser_src;
   wire  [16*NUM_PHYS_FUNC*NUM_QDMA-1:0] axis_qdma_c2h_tuser_dst;
   wire  [80*NUM_PHYS_FUNC*NUM_QDMA-1:0] axis_qdma_c2h_tuser_ptp_ts;
+  wire  [11*NUM_PHYS_FUNC*NUM_QDMA-1:0] axis_qdma_c2h_tuser_qid;
   wire     [NUM_PHYS_FUNC*NUM_QDMA-1:0] axis_qdma_c2h_tready;
 
   // Packet adapter interfaces to the box running at 250MHz
@@ -736,7 +738,11 @@ module open_nic_shell #(
       .MAX_PKT_LEN   (MAX_PKT_LEN),
       .USE_PHYS_FUNC (USE_PHYS_FUNC),
       .NUM_PHYS_FUNC (NUM_PHYS_FUNC),
-      .NUM_QUEUE     (NUM_QUEUE)
+      .NUM_QUEUE     (NUM_QUEUE),
+      // eth_2cmac_1pf: plugin tags absolute qid per-CMAC on the C2H stream
+      // via s_axis_c2h_tuser_qid; EXT_QID=1 makes qdma_subsystem use it as
+      // the descriptor queue instead of internal RSS.
+      .EXT_QID       (1)
     ) qdma_subsystem_inst (
       .s_axil_awvalid                       (axil_qdma_awvalid[i]),
       .s_axil_awaddr                        (axil_qdma_awaddr[`getvec(32, i)]),
@@ -763,6 +769,7 @@ module open_nic_shell #(
       .m_axis_h2c_tuser_src                 (axis_qdma_h2c_tuser_src[`getvec(16*NUM_PHYS_FUNC, i)]),
       .m_axis_h2c_tuser_dst                 (axis_qdma_h2c_tuser_dst[`getvec(16*NUM_PHYS_FUNC, i)]),
       .m_axis_h2c_tuser_ptp_tag             (axis_qdma_h2c_tuser_ptp_tag[`getvec(16*NUM_PHYS_FUNC, i)]),
+      .m_axis_h2c_tuser_qid                 (axis_qdma_h2c_tuser_qid[`getvec(11*NUM_PHYS_FUNC, i)]),
       .m_axis_h2c_tready                    (axis_qdma_h2c_tready[`getvec(NUM_PHYS_FUNC, i)]),
 
       .s_axis_c2h_tvalid                    (axis_qdma_c2h_tvalid[`getvec(NUM_PHYS_FUNC, i)]),
@@ -773,6 +780,7 @@ module open_nic_shell #(
       .s_axis_c2h_tuser_src                 (axis_qdma_c2h_tuser_src[`getvec(16*NUM_PHYS_FUNC, i)]),
       .s_axis_c2h_tuser_dst                 (axis_qdma_c2h_tuser_dst[`getvec(16*NUM_PHYS_FUNC, i)]),
       .s_axis_c2h_tuser_ptp_ts              (axis_qdma_c2h_tuser_ptp_ts[`getvec(80*NUM_PHYS_FUNC, i)]),
+      .s_axis_c2h_tuser_qid                 (axis_qdma_c2h_tuser_qid[`getvec(11*NUM_PHYS_FUNC, i)]),
       .s_axis_c2h_tready                    (axis_qdma_c2h_tready[`getvec(NUM_PHYS_FUNC, i)]),
 
   `ifdef __synthesis__
@@ -1057,6 +1065,7 @@ module open_nic_shell #(
     .s_axis_qdma_h2c_tuser_src            (axis_qdma_h2c_tuser_src),
     .s_axis_qdma_h2c_tuser_dst            (axis_qdma_h2c_tuser_dst),
     .s_axis_qdma_h2c_tuser_ptp_tag        (axis_qdma_h2c_tuser_ptp_tag),
+    .s_axis_qdma_h2c_tuser_qid            (axis_qdma_h2c_tuser_qid),
     .s_axis_qdma_h2c_tready               (axis_qdma_h2c_tready),
 
     .m_axis_qdma_c2h_tvalid               (axis_qdma_c2h_tvalid),
@@ -1067,6 +1076,7 @@ module open_nic_shell #(
     .m_axis_qdma_c2h_tuser_src            (axis_qdma_c2h_tuser_src),
     .m_axis_qdma_c2h_tuser_dst            (axis_qdma_c2h_tuser_dst),
     .m_axis_qdma_c2h_tuser_ptp_ts         (axis_qdma_c2h_tuser_ptp_ts),
+    .m_axis_qdma_c2h_tuser_qid            (axis_qdma_c2h_tuser_qid),
     .m_axis_qdma_c2h_tready               (axis_qdma_c2h_tready),
 
     .m_axis_adap_tx_250mhz_tvalid         (axis_adap_tx_250mhz_tvalid),

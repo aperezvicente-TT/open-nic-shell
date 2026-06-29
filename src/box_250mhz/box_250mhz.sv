@@ -49,6 +49,8 @@ module box_250mhz #(
   input   [16*NUM_PHYS_FUNC*NUM_QDMA-1:0] s_axis_qdma_h2c_tuser_src,
   input   [16*NUM_PHYS_FUNC*NUM_QDMA-1:0] s_axis_qdma_h2c_tuser_dst,
   input   [16*NUM_PHYS_FUNC*NUM_QDMA-1:0] s_axis_qdma_h2c_tuser_ptp_tag,
+  // Absolute qid forwarded from QDMA so the plugin can demux H2C to CMAC.
+  input   [11*NUM_PHYS_FUNC*NUM_QDMA-1:0] s_axis_qdma_h2c_tuser_qid,
   output     [NUM_PHYS_FUNC*NUM_QDMA-1:0] s_axis_qdma_h2c_tready,
 
   output     [NUM_PHYS_FUNC*NUM_QDMA-1:0] m_axis_qdma_c2h_tvalid,
@@ -59,6 +61,9 @@ module box_250mhz #(
   output  [16*NUM_PHYS_FUNC*NUM_QDMA-1:0] m_axis_qdma_c2h_tuser_src,
   output  [16*NUM_PHYS_FUNC*NUM_QDMA-1:0] m_axis_qdma_c2h_tuser_dst,
   output  [80*NUM_PHYS_FUNC*NUM_QDMA-1:0] m_axis_qdma_c2h_tuser_ptp_ts,
+  // Plugin tags CMAC-encoded absolute qid here.  Ignored by qdma_subsystem
+  // when EXT_QID=0 (non-RDMA builds).
+  output  [11*NUM_PHYS_FUNC*NUM_QDMA-1:0] m_axis_qdma_c2h_tuser_qid,
   input      [NUM_PHYS_FUNC*NUM_QDMA-1:0] m_axis_qdma_c2h_tready,
 
   output     [NUM_CMAC_PORT-1:0] m_axis_adap_tx_250mhz_tvalid,
@@ -127,6 +132,7 @@ module box_250mhz #(
     assign m_axis_qdma_c2h_tuser_src    = 0;
     assign m_axis_qdma_c2h_tuser_dst    = 0;
     assign m_axis_qdma_c2h_tuser_ptp_ts = 0;
+    assign m_axis_qdma_c2h_tuser_qid    = 0;
   end
   endgenerate
 

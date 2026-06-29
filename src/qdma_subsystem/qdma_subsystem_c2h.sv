@@ -157,7 +157,7 @@ module qdma_subsystem_c2h #(
   axi_stream_register_slice #(
     .TDATA_W (512),
     .TUSER_W (16 + 11 + 80),
-    .MODE    ("forward")
+    .MODE    ("full")
   ) slice_inst (
     .s_axis_tvalid (axis_c2h_tvalid),
     .s_axis_tdata  (axis_c2h_tdata),
