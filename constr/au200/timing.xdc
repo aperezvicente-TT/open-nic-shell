@@ -75,27 +75,36 @@ set_property -quiet ASYNC_REG TRUE [get_cells -quiet -hier -filter {NAME =~ *ptp
 set_property -quiet ASYNC_REG TRUE [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_inst/sample_update_sync2_reg_reg}]
 set_property -quiet ASYNC_REG TRUE [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_inst/sample_update_sync3_reg_reg}]
 
+# Helpers: apply a false-path exception ONLY if the target objects exist.
+# PTP CDC synchronizer FFs can be optimized/renamed at synth time, so
+# get_cells/get_pins may return empty; a bare set_false_path then errors
+# ("No valid object(s) found", [Vivado 12-4739]) and fails the run. The
+# synchronizer FF chains + ASYNC_REG (set above with -quiet) still protect
+# the crossings, so skipping the exception when cells are absent is safe.
+proc fp_to_if   {objs} { if {[llength $objs]} { set_false_path -to   $objs } }
+proc fp_from_if {objs} { if {[llength $objs]} { set_false_path -from $objs } }
+
 # False paths for CDC toggle synchronizer first stages
 # input_clk (axis_aclk) -> output_clk (cmac_clk)
-set_false_path -to [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_inst/src_sync_sync1_reg_reg}]
-set_false_path -to [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_inst/src_phase_sync_sync1_reg_reg}]
+fp_to_if [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_inst/src_sync_sync1_reg_reg}]
+fp_to_if [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_inst/src_phase_sync_sync1_reg_reg}]
 # input_clk (axis_aclk) -> sample_clk (axil_aclk)
-set_false_path -to [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_inst/src_sync_sample_sync1_reg_reg}]
+fp_to_if [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_inst/src_sync_sample_sync1_reg_reg}]
 # output_clk (cmac_clk) -> sample_clk (axil_aclk)
-set_false_path -to [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_inst/dest_sync_sample_sync1_reg_reg}]
+fp_to_if [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_inst/dest_sync_sample_sync1_reg_reg}]
 # sample_clk (axil_aclk) -> output_clk (cmac_clk)
-set_false_path -to [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_inst/sample_update_sync1_reg_reg}]
+fp_to_if [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_inst/sample_update_sync1_reg_reg}]
 
 # Data capture registers (protected by toggle handshake, safe to false-path)
 # NOTE: Use trailing * instead of [*] — Vivado glob treats [*] as a character
 # class (matching literal '*'), not as matching bus indices like [0], [1], etc.
-set_false_path -from [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_inst/src_ts_s_capt_reg_reg*}]
-set_false_path -from [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_inst/src_ts_ns_capt_reg_reg*}]
-set_false_path -from [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_inst/src_ts_step_capt_reg_reg}]
-set_false_path -from [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_inst/sample_acc_out_reg_reg*}]
+fp_from_if [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_inst/src_ts_s_capt_reg_reg*}]
+fp_from_if [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_inst/src_ts_ns_capt_reg_reg*}]
+fp_from_if [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_inst/src_ts_step_capt_reg_reg}]
+fp_from_if [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_inst/sample_acc_out_reg_reg*}]
 
 # PTP reset synchronizer: async reset crossing to cmac_clk domain
-set_false_path -to [get_cells -quiet -hier -filter {NAME =~ *ptp_subsystem_inst/gen_port[*].cmac_rst_sync1_reg}]
+fp_to_if [get_cells -quiet -hier -filter {NAME =~ *ptp_subsystem_inst/gen_port[*].cmac_rst_sync1_reg}]
 
 # ---------------------------------------------------------------------------
 # PTP RX CDC timing constraints (axis_aclk -> rx_serdes_clk)
@@ -132,26 +141,27 @@ set_property -quiet ASYNC_REG TRUE [get_cells -quiet -hier -filter {NAME =~ *ptp
 set_property -quiet ASYNC_REG TRUE [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_rx_inst/sample_update_sync2_reg_reg}]
 set_property -quiet ASYNC_REG TRUE [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_rx_inst/sample_update_sync3_reg_reg}]
 
-# False paths for RX CDC toggle synchronizer first stages
-set_false_path -to [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_rx_inst/src_sync_sync1_reg_reg}]
-set_false_path -to [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_rx_inst/src_phase_sync_sync1_reg_reg}]
-set_false_path -to [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_rx_inst/src_sync_sample_sync1_reg_reg}]
-set_false_path -to [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_rx_inst/dest_sync_sample_sync1_reg_reg}]
-set_false_path -to [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_rx_inst/sample_update_sync1_reg_reg}]
+# False paths for RX CDC toggle synchronizer first stages (fp_to_if/fp_from_if
+# helpers defined above with the TX-side block).
+fp_to_if [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_rx_inst/src_sync_sync1_reg_reg}]
+fp_to_if [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_rx_inst/src_phase_sync_sync1_reg_reg}]
+fp_to_if [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_rx_inst/src_sync_sample_sync1_reg_reg}]
+fp_to_if [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_rx_inst/dest_sync_sample_sync1_reg_reg}]
+fp_to_if [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_rx_inst/sample_update_sync1_reg_reg}]
 
 # Data capture registers (protected by toggle handshake)
-set_false_path -from [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_rx_inst/src_ts_s_capt_reg_reg*}]
-set_false_path -from [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_rx_inst/src_ts_ns_capt_reg_reg*}]
-set_false_path -from [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_rx_inst/src_ts_step_capt_reg_reg}]
-set_false_path -from [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_rx_inst/sample_acc_out_reg_reg*}]
+fp_from_if [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_rx_inst/src_ts_s_capt_reg_reg*}]
+fp_from_if [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_rx_inst/src_ts_ns_capt_reg_reg*}]
+fp_from_if [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_rx_inst/src_ts_step_capt_reg_reg}]
+fp_from_if [get_cells -quiet -hier -filter {NAME =~ *ptp_clock_cdc_rx_inst/sample_acc_out_reg_reg*}]
 
 # PTP RX reset synchronizer: async reset crossing to rx_serdes_clk domain
-set_false_path -to [get_cells -quiet -hier -filter {NAME =~ *ptp_subsystem_inst/gen_port[*].rx_serdes_rst_sync1_reg}]
+fp_to_if [get_cells -quiet -hier -filter {NAME =~ *ptp_subsystem_inst/gen_port[*].rx_serdes_rst_sync1_reg}]
 
 # False-path async reset (PRE) to rx_serdes_rst synchronizer stages
 # The reset crosses from QDMA 125MHz -> rxoutclk 322MHz; the synchronizer
 # handles metastability, so recovery/removal checks are not meaningful.
-set_false_path -to [get_pins -quiet -hier -filter {NAME =~ *ptp_subsystem_inst/gen_port[*].rx_serdes_rst_sync*_reg/PRE}]
+fp_to_if [get_pins -quiet -hier -filter {NAME =~ *ptp_subsystem_inst/gen_port[*].rx_serdes_rst_sync*_reg/PRE}]
 
 # ---------------------------------------------------------------------------
 # Placement constraints for packet adapter CDC FIFOs
