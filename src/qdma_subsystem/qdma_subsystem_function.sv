@@ -218,16 +218,23 @@ module qdma_subsystem_function #(
   assign s_axis_h2c_tready   = axis_h2c_tready && h2c_match;
 
   generate if (QDMA_ID == 0) begin
+    // qid byte-locked into the slice TUSER (mirrors the C2H fix): qid travels
+    // in lockstep with the data beat through the slice, so there is NO
+    // side-FIFO first-beat-vs-tlast race.  The old racy side-FIFO+fallback
+    // (kept below only for the unused QDMA_ID!=0 build) emitted a one-packet-
+    // skewed qid at packet boundaries, misrouting CMAC0 (qid<64) traffic to
+    // CMAC1 in the eth_2cmac_1pf plugin.  TUSER = {qid[10:0], size[15:0]} = 27b.
+    wire [26:0] h2c_slice_tuser_out;
     axi_stream_register_slice #(
       .TDATA_W (512),
-      .TUSER_W (16),
+      .TUSER_W (27),
       .MODE    ("full")
     ) h2c_slice_inst (
       .s_axis_tvalid (axis_h2c_tvalid),
       .s_axis_tdata  (axis_h2c_tdata),
       .s_axis_tkeep  (axis_h2c_tkeep),
       .s_axis_tlast  (axis_h2c_tlast),
-      .s_axis_tuser  (axis_h2c_tuser_size),
+      .s_axis_tuser  ({s_axis_h2c_tuser_qid, axis_h2c_tuser_size}),
       .s_axis_tid    (0),
       .s_axis_tdest  (0),
       .s_axis_tready (axis_h2c_tready),
@@ -236,7 +243,7 @@ module qdma_subsystem_function #(
       .m_axis_tdata  (m_axis_h2c_tdata),
       .m_axis_tkeep  (m_axis_h2c_tkeep),
       .m_axis_tlast  (m_axis_h2c_tlast),
-      .m_axis_tuser  (m_axis_h2c_tuser_size),
+      .m_axis_tuser  (h2c_slice_tuser_out),
       .m_axis_tid    (),
       .m_axis_tdest  (),
       .m_axis_tready (m_axis_h2c_tready),
@@ -244,6 +251,8 @@ module qdma_subsystem_function #(
       .aclk          (axis_aclk),
       .aresetn       (axil_aresetn)
     );
+    assign m_axis_h2c_tuser_size = h2c_slice_tuser_out[15:0];
+    assign m_axis_h2c_tuser_qid  = h2c_slice_tuser_out[26:16];
   end
   else begin
     qdma_subsystem_clk_converter h2c_axis_inst(
@@ -267,12 +276,13 @@ module qdma_subsystem_function #(
   end
   endgenerate
 
-  // ----- H2C qid side-FIFO -----------------------------------------------
-  // Main h2c slice carries only {size} in TUSER (original 16-bit width).
-  // Track qid via a small FIFO: write on PRE-slice FIRST BEAT of each
-  // packet (so the FIFO is populated before the slice emits that packet's
-  // first output beat), read on POST-slice tlast handshake.  Packets enter
-  // and exit in order, so the FIFO stays aligned with data in flight.
+  // ----- H2C qid side-FIFO (QDMA_ID!=0 ONLY) -----------------------------
+  // RACY legacy path, retained only for the multi-QDMA (QDMA_ID!=0) build
+  // whose clk_converter TUSER is not widened.  The au200 1PF/2CMAC target is
+  // QDMA_ID==0 and uses the byte-locked slice above instead.  Do NOT use this
+  // for QDMA_ID==0 — the empty-fallback (below) skews qid by one packet at
+  // boundaries and misroutes CMAC0 traffic to CMAC1.
+  generate if (QDMA_ID != 0) begin : gen_h2c_qid_sidefifo
   reg s_h2c_in_pkt;
   always @(posedge axis_aclk) begin
     if (~axil_aresetn) s_h2c_in_pkt <= 1'b0;
@@ -325,6 +335,8 @@ module qdma_subsystem_function #(
   // When the FIFO is briefly empty (first packet still propagating through
   // the slice), fall back to the pre-slice value directly.
   assign m_axis_h2c_tuser_qid = h2c_qid_empty ? s_axis_h2c_tuser_qid : h2c_qid_dout;
+  end
+  endgenerate
 
   generate for (genvar i = 0; i < 64; i++) begin
     assign axis_h2c_tkeep[i] = (axis_h2c_tvalid && axis_h2c_tready && axis_h2c_tlast) ?
