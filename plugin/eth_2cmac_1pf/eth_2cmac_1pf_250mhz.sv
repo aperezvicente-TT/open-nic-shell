@@ -242,9 +242,14 @@ module eth_2cmac_1pf_250mhz #(
   // CMAC index = top SEL_W bits of qid above the intra-CMAC queue field.
   // Clamp to the last CMAC if the qid lands out of range (defensive).
   wire [SEL_W-1:0] h2c_first_beat_sel_raw = h2c_tuser_qid[QID_LO_W +: SEL_W];
+  // Compare against the FULL-width NUM_INTF, not NUM_INTF[SEL_W-1:0] — the
+  // truncation made this `(sel_raw < 0)` for NUM_INTF=2 (0b10 -> low bit 0),
+  // hardwiring the select to CMAC1 and routing ALL H2C to CMAC1 regardless of
+  // qid (root cause of CMAC0-TX-dead).  For power-of-2 NUM_INTF sel_raw is
+  // always in range; the clamp only bites for non-power-of-2 CMAC counts.
   wire [SEL_W-1:0] h2c_first_beat_sel =
-        (h2c_first_beat_sel_raw < NUM_INTF[SEL_W-1:0]) ?
-        h2c_first_beat_sel_raw : (NUM_INTF[SEL_W-1:0] - 1'b1);
+        (h2c_first_beat_sel_raw < NUM_INTF) ?
+        h2c_first_beat_sel_raw : (NUM_INTF - 1);
 
   // Demux lock state: hold selection until tlast so a packet isn't split.
   reg              h2c_dmux_locked;

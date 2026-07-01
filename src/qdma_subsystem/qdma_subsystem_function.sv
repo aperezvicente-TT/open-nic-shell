@@ -249,7 +249,7 @@ module qdma_subsystem_function #(
       .s_axis_tdata  (axis_h2c_tdata),
       .s_axis_tkeep  (axis_h2c_tkeep),
       .s_axis_tlast  (axis_h2c_tlast),
-      .s_axis_tuser  ({h2c_qid_corrected, axis_h2c_tuser_size}),
+      .s_axis_tuser  ({s_axis_h2c_tuser_qid, axis_h2c_tuser_size}),
       .s_axis_tid    (0),
       .s_axis_tdest  (0),
       .s_axis_tready (axis_h2c_tready),
