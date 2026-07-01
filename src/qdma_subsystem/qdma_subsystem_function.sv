@@ -51,6 +51,13 @@ module qdma_subsystem_function #(
   input          s_axis_h2c_tlast,
   input   [15:0] s_axis_h2c_tuser_size,
   input   [10:0] s_axis_h2c_tuser_qid,
+  // QDMA IP per-descriptor port_id (from sw_ctxt.port_id): a reliable 3-bit
+  // CMAC tag (primary=0, secondary=1) the driver sets via q_base/PER_CMAC.
+  // Used to REBUILD the CMAC-select bits of the H2C qid below, because the IP
+  // mis-emits the raw qid's high bits (observed: primary qid 0..13 arriving
+  // with bit6=1, misrouting CMAC0 traffic to CMAC1).  port_id is a plain
+  // passthrough and is trustworthy where the composed qid is not.
+  input    [2:0] s_axis_h2c_tuser_port_id,
   input   [15:0] s_axis_h2c_tuser_ptp_tag,
   output         s_axis_h2c_tready,
 
@@ -217,6 +224,14 @@ module qdma_subsystem_function #(
   assign axis_h2c_tuser_size = s_axis_h2c_tuser_size;
   assign s_axis_h2c_tready   = axis_h2c_tready && h2c_match;
 
+  // Rebuild the CMAC-select bits of the H2C qid from the trustworthy port_id:
+  //   qid[8:6] = port_id (CMAC index), qid[5:0] = within-port index.
+  // The eth plugin demux reads qid[6 +: clog2(NUM_CMAC)] == port_id, so CMAC0
+  // traffic (port_id=0) routes to CMAC0 regardless of the QDMA IP mis-composing
+  // the raw qid's high bits.  Scales to 8 CMACs (port_id 0..7 at qid[8:6]).
+  wire [10:0] h2c_qid_corrected =
+      {2'b0, s_axis_h2c_tuser_port_id, s_axis_h2c_tuser_qid[5:0]};
+
   generate if (QDMA_ID == 0) begin
     // qid byte-locked into the slice TUSER (mirrors the C2H fix): qid travels
     // in lockstep with the data beat through the slice, so there is NO
@@ -234,7 +249,7 @@ module qdma_subsystem_function #(
       .s_axis_tdata  (axis_h2c_tdata),
       .s_axis_tkeep  (axis_h2c_tkeep),
       .s_axis_tlast  (axis_h2c_tlast),
-      .s_axis_tuser  ({s_axis_h2c_tuser_qid, axis_h2c_tuser_size}),
+      .s_axis_tuser  ({h2c_qid_corrected, axis_h2c_tuser_size}),
       .s_axis_tid    (0),
       .s_axis_tdest  (0),
       .s_axis_tready (axis_h2c_tready),

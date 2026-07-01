@@ -854,6 +854,7 @@ module qdma_subsystem #(
         .s_axis_h2c_tlast      (axis_h2c_tlast[i]),
         .s_axis_h2c_tuser_size (axis_h2c_tuser_size[`getvec(16, i)]),
         .s_axis_h2c_tuser_qid  (axis_h2c_tuser_qid[`getvec(11, i)]),
+        .s_axis_h2c_tuser_port_id (axis_qdma_h2c_tuser_port_id),
         .s_axis_h2c_tuser_ptp_tag (axis_h2c_tuser_ptp_tag[`getvec(16, i)]),
         .s_axis_h2c_tready     (axis_h2c_tready[i]),
 
