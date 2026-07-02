@@ -27,7 +27,11 @@ module qdma_subsystem_function #(
   // hash+indir_table+q_base path.  Used by Path γ single-slot multi-CMAC
   // builds where the plugin encodes CMAC identity into absolute qid before
   // the stream reaches this module.  Default 0 preserves legacy RSS path.
-  parameter int EXT_QID     = 0
+  parameter int EXT_QID     = 0,
+  // RSS_ON_EXT=1 (with EXT_QID=1): combine mode — internal hash supplies the low
+  // QID_LO_W qid bits (RSS within a CMAC block); external qid supplies the high
+  // CMAC-select bits.  Default 0 = external qid used verbatim.
+  parameter int RSS_ON_EXT  = 0
 ) (
   input          s_axil_awvalid,
   input   [31:0] s_axil_awaddr,
@@ -104,7 +108,13 @@ module qdma_subsystem_function #(
   // computation.  The FIFO is not operated in packet mode.
   localparam C_PKT_FIFO_DEPTH = 32;
   // using the same depth to handle the case of 64B frames   
-  localparam C_QID_FIFO_DEPTH = C_PKT_FIFO_DEPTH; 
+  localparam C_QID_FIFO_DEPTH = C_PKT_FIFO_DEPTH;
+
+  // Per-port RSS combine mode (EXT_QID=1 && RSS_ON_EXT=1): the external qid
+  // supplies the high (CMAC-select) bits; the internal Toeplitz hash → indir_table
+  // lookup supplies the low QID_LO_W bits (the RSS index within a CMAC block).
+  localparam int QID_LO_W = 6;   // = clog2(PER_CMAC_QUEUES=64)
+  localparam int COMBINE  = (EXT_QID == 1) && (RSS_ON_EXT == 1);
 
   wire   [15:0] q_base;
   wire   [15:0] num_q;
@@ -479,20 +489,25 @@ module qdma_subsystem_function #(
   //     (project_b7_dual_cmac_qid_misroute_2026_05_08_pm.md).  qid_fifo is
   //     not instantiated in this build path.
 
-  generate if (EXT_QID == 1) begin : gen_ext_qid_passthru
-    // No qid_fifo logic — qid rides in slice TUSER (axis_c2h_tuser_qid →
-    // axis_c2h_buf_tuser_qid → m_axis_c2h_tuser_qid).  Tie off the unused
-    // module-level reg/wire so they aren't left dangling.
+  // Per-packet indir_table entry selected by the low 7 hash bits.  Broken out to
+  // a wire because Verilog can't bit-select a macro part-select expression.
+  wire [15:0] c2h_rss_indir_ent = indir_table[`getvec(16, hash_result[6:0])];
+
+  generate if (EXT_QID == 1 && RSS_ON_EXT == 0) begin : gen_ext_qid_passthru
+    // Full-external qid: rides slice TUSER (axis_c2h_tuser_qid →
+    // axis_c2h_buf_tuser_qid → m_axis_c2h_tuser_qid).  qid_fifo unused.
     always @* begin
       qid_fifo_wr_en = 1'b0;
       qid_fifo_din   = 11'd0;
     end
     assign qid_fifo_rd_en = 1'b0;
   end
-  else begin : gen_rss_qid
-    // RSS path (EXT_QID=0): unchanged hash → indir_table → qid_fifo flow.
-    // s_c2h_in_pkt + s_c2h_first_beat declared inside this generate so they
-    // don't leak into the EXT_QID=1 path (where they're unused).
+  else begin : gen_qid_compute
+    // Two sub-cases share the hash → qid_fifo write/read timing:
+    //   EXT_QID=0             : legacy RSS, qid = indir_table[hash] + q_base
+    //   COMBINE (RSS_ON_EXT=1): store ONLY the low QID_LO_W bits; the high
+    //                           CMAC-select bits come from the external qid and
+    //                           are OR'd in at the output mux.
     reg s_c2h_in_pkt_r;
     always @(posedge axis_aclk) begin
       if (~axil_aresetn) s_c2h_in_pkt_r <= 1'b0;
@@ -509,7 +524,9 @@ module qdma_subsystem_function #(
       end
       else if (hash_result_valid) begin
         qid_fifo_wr_en <= 1'b1;
-        qid_fifo_din   <= indir_table[`getvec(16, hash_result[6:0])] + q_base;
+        qid_fifo_din   <= COMBINE
+          ? {{(11-QID_LO_W){1'b0}}, c2h_rss_indir_ent[QID_LO_W-1:0]}
+          : (c2h_rss_indir_ent + q_base);
       end
       else begin
         qid_fifo_wr_en <= 1'b0;
@@ -519,9 +536,9 @@ module qdma_subsystem_function #(
   end
   endgenerate
 
-  // qid_fifo only instantiated for EXT_QID=0 (RSS).  EXT_QID=1 omits it
-  // entirely; the unused FIFO output wires are tied off below.
-  generate if (EXT_QID == 0) begin : gen_qid_fifo_inst
+  // qid_fifo instantiated for RSS (EXT_QID=0) and combine (RSS_ON_EXT=1) — both
+  // need per-packet qid timing.  Full-external EXT_QID=1 omits it (tied off below).
+  generate if (EXT_QID == 0 || (EXT_QID == 1 && RSS_ON_EXT == 1)) begin : gen_qid_fifo_inst
     xpm_fifo_sync #(
       .DOUT_RESET_VALUE    ("0"),
       .ECC_MODE            ("no_ecc"),
@@ -563,7 +580,7 @@ module qdma_subsystem_function #(
     );
   end
   else begin : gen_qid_fifo_tieoff
-    // EXT_QID=1: qid_fifo is unused.  Tie off unused outputs.
+    // Full-external qid only (EXT_QID=1, RSS_ON_EXT=0): qid_fifo unused.
     assign qid_fifo_dout  = 11'd0;
     assign qid_fifo_empty = 1'b0;   // never empty → never gates m_axis_c2h_tvalid
     assign qid_fifo_full  = 1'b0;
@@ -683,17 +700,21 @@ module qdma_subsystem_function #(
     .wr_rst_busy   ()
   );
 
-  // v5.2.10: EXT_QID=1 → qid is in buf_fifo TUSER, no qid_fifo gating needed.
-  //          EXT_QID=0 → qid is in qid_fifo, gate output until FIFO has data.
-  // qid_fifo_empty is tied to 1'b0 in the EXT_QID=1 generate (gen_qid_fifo_tieoff)
-  // so the && ~qid_fifo_empty term collapses to ~0 = 1.  Synthesizer optimizes it
-  // out for EXT_QID=1 builds, with no behavioral cost.
+  // qid timing by mode:
+  //   full-external (EXT_QID=1, RSS_ON_EXT=0): qid in buf_fifo TUSER; qid_fifo_empty
+  //     tied 1'b0 so the ~qid_fifo_empty gate collapses out (optimized away).
+  //   RSS (EXT_QID=0) and combine (RSS_ON_EXT=1): the (low) qid rides qid_fifo, so
+  //     the ~qid_fifo_empty gate correctly holds each packet until its hash is ready.
   assign m_axis_c2h_tvalid      = axis_c2h_buf_tvalid && ~qid_fifo_empty;
   assign m_axis_c2h_tdata       = axis_c2h_buf_tdata;
   assign m_axis_c2h_tlast       = axis_c2h_buf_tlast;
   assign m_axis_c2h_tuser_size  = axis_c2h_buf_tuser_size;
-  assign m_axis_c2h_tuser_qid   = (EXT_QID == 1) ? axis_c2h_buf_tuser_qid
-                                                 : qid_fifo_dout;
+  // Combine: high (CMAC-select) bits from the external qid OR'd with the low
+  // RSS-index bits from qid_fifo.  Full-external: external qid verbatim.  RSS: fifo.
+  assign m_axis_c2h_tuser_qid   =
+        COMBINE        ? (axis_c2h_buf_tuser_qid | {{(11-QID_LO_W){1'b0}}, qid_fifo_dout[QID_LO_W-1:0]})
+      : (EXT_QID == 1) ?  axis_c2h_buf_tuser_qid
+      :                   qid_fifo_dout;
   assign m_axis_c2h_tuser_ptp_ts = ptp_ts_fifo_dout;
   assign axis_c2h_buf_tready    = m_axis_c2h_tready && ~qid_fifo_empty;
 

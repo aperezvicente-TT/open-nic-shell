@@ -742,7 +742,11 @@ module open_nic_shell #(
       // eth_2cmac_1pf: plugin tags absolute qid per-CMAC on the C2H stream
       // via s_axis_c2h_tuser_qid; EXT_QID=1 makes qdma_subsystem use it as
       // the descriptor queue instead of internal RSS.
-      .EXT_QID       (1)
+      .EXT_QID       (1),
+      // Per-port RSS: OR the internal-hash-derived low qid bits onto the
+      // plugin's external qid (cmac*PER_CMAC_QUEUES) so flows fan out across
+      // queues WITHIN each CMAC block while the high bits keep steering by port.
+      .RSS_ON_EXT    (1)
     ) qdma_subsystem_inst (
       .s_axil_awvalid                       (axil_qdma_awvalid[i]),
       .s_axil_awaddr                        (axil_qdma_awaddr[`getvec(32, i)]),

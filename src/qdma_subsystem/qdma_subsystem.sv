@@ -26,6 +26,9 @@ module qdma_subsystem #(
   // When EXT_QID=1, C2H qid comes from s_axis_c2h_tuser_qid upstream (plugin
   // tags absolute qid per-CMAC).  Default 0 preserves legacy internal RSS.
   parameter int EXT_QID       = 0,
+  // RSS_ON_EXT=1 (with EXT_QID=1): internal Toeplitz hash supplies the low qid
+  // bits (intra-CMAC RSS index); external qid supplies the high CMAC-select bits.
+  parameter int RSS_ON_EXT    = 0,
   parameter int NUM_QUEUE     = 512
 ) (
   input                          s_axil_awvalid,
@@ -830,7 +833,8 @@ module qdma_subsystem #(
         .QDMA_ID     (QDMA_ID),
         .MAX_PKT_LEN (MAX_PKT_LEN),
         .MIN_PKT_LEN (MIN_PKT_LEN),
-        .EXT_QID     (EXT_QID)
+        .EXT_QID     (EXT_QID),
+        .RSS_ON_EXT  (RSS_ON_EXT)
       ) func_inst (
         .s_axil_awvalid        (axil_func_awvalid[i]),
         .s_axil_awaddr         (axil_func_awaddr[`getvec(32, i)]),
