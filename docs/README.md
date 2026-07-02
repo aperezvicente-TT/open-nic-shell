@@ -24,6 +24,7 @@ If you are… | Start with
 **Bringing the card up / running traffic** | Ch. 7 (Operation & Bring-up)
 **Debugging a problem** | Ch. 8 (Diagnostics & Troubleshooting)
 **Looking up a register or offset** | Ch. 9 (Reference)
+**Planning what to build next** | Ch. 10 (Roadmap)
 
 ---
 
@@ -40,6 +41,7 @@ If you are… | Start with
 | 7 | [Operation & Bring-up Runbook](07-operation-runbook.md) | Driver load, netdev↔CMAC map, IP/neighbor config, the NetworkManager gotcha, ping/iperf |
 | 8 | [Diagnostics & Troubleshooting](08-diagnostics.md) | Reading the diag counters, CMAC stats, known-good failure playbooks, BW/retransmit analysis |
 | 9 | [Reference: Registers, Offsets & Bit-fields](09-reference.md) | Consolidated BAR map, CMAC strides, diag CSR offsets, qid/TUSER bit-field tables |
+| 10 | [Roadmap: From Working Link to Full NIC](10-roadmap.md) | Gap analysis by tier (table-stakes → SmartNIC), FPGA-vs-driver split, effort estimates |
 
 ---
 
