@@ -4,6 +4,11 @@ A step-by-step plan to add Receive Side Scaling **within** each CMAC's queue blo
 while keeping the qid's high bit(s) as the port selector. Read Ch. 10 §2.1 for the
 concept and Ch. 3 for the qid graft this builds on.
 
+> **✅ STATUS: IMPLEMENTED & HARDWARE-VERIFIED (2026-07-03).** Shell RTL commit
+> `5117c3c` (`RSS_ON_EXT`), driver commit `5b0e4c8` (default indir + Toeplitz key).
+> Bitstream built (timing met, WNS 0.000), flashed (build-stamp `0x07021704`).
+> See §11.12 for the on-hardware verification results.
+
 ## 11.1 The design in one paragraph
 
 The absolute qid is `{ cmac_sel | rss_idx }`, split at `QID_LO_W = 6`. The plugin already
@@ -207,3 +212,35 @@ the instance so no new build flag is required. Rebuild `onic.ko` (Ch. 5 §5.7).
 **Overall ≈ M**, dominated by verification and the rebuild — not by new logic. The
 design reuses the always-on hash, the existing `qid_fifo` alignment mechanism, the
 existing output-gate, and the existing driver ethtool/queue plumbing.
+
+## 11.12 Verification results (on hardware, 2026-07-03)
+
+Build-stamp `0x07021704` flashed and live; `num_cmacs=2`; 14 rx queues/port; MSI-X
+32 vectors / 14 queue-vectors per CMAC. `ethtool -x enp1s0` confirmed the default
+indirection table (`i % 14`) and the programmed 40-byte Toeplitz key (Toeplitz on).
+
+> **How spread was observed:** the driver exposes no per-queue counters in
+> `ethtool -S`, so RX fan-out was measured via **per-queue MSI-X interrupt deltas** in
+> `/proc/interrupts` (`onic1s0f0c<cmac>-<q>`). Load was generated with **reverse iperf**
+> (`iperf3 -c <peer> -R -P 8`) so the remote transmits and the *host* receives, which is
+> what exercises host-side RSS. (iperf3 here is the local build at
+> `/home/alex/mpi-shfs/fpga/iperf/src/iperf3`, not in `PATH`.)
+
+| Test | Expected | Result |
+|------|----------|--------|
+| CMAC0 fan-out, 8 streams | spread across many queues | **6–7 / 14** queues active |
+| CMAC1 fan-out, 8 streams | spread across many queues | **5 / 14** queues active |
+| Steering isolation | load on one CMAC never touches the other's queues | CMAC0→**0** c1 queues; CMAC1→**0** c0 queues |
+| `ethtool -X enp1s0 equal 2` | spread collapses to 2 | **2 / 14** queues |
+| Single flow (`-P 1`) | stays on one queue (ordering) | **1 / 14** queue |
+| Trip-wires `0x100040`/`0x100044` | 0 | **0 / 0** |
+| Concurrent ping both ports, 1000 pkts each | 0% loss | **0% / 0%** |
+
+All pass. Per-port RSS coexists with qid-steering: flows fan out across cores *within*
+each CMAC's queue block, the CMAC-select high bits keep the two ports isolated, and a
+single flow stays on one queue (in-order). The `equal 2` result proves the indirection
+table is live and controllable at runtime via `ethtool -X`.
+
+**Caveat unchanged:** aggregate RX throughput is still bounded by the remote peers'
+Gen3 ×4 PCIe slot (~22 Gbps), so RSS's benefit here is *distribution across cores*, not a
+higher aggregate number on this particular bench (Ch. 8 §8.6).
