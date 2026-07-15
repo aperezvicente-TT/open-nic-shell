@@ -6,12 +6,16 @@ SOP/EOP framing is honoured and a paged skb becomes one CMAC packet. Read Ch. 10
 §2.1 and the SG post-mortem (§10.2 item 1.3) first — this chapter is the fix for the
 blocker found there.
 
-> **⚠️ STATUS: PLANNED / UNBUILT (2026-07-14).** Prereq context: internal-mode H2C
-> does **not** honour multi-descriptor SOP/EOP framing (proven on hardware — a
-> 6-encoding driver sweep all failed; on-wire capture showed fragmented frames
-> truncated by one 64 B beat). The driver-side SG datapath already exists (dormant)
-> in `onic_xmit_frame`; `NETIF_F_SG` is currently not advertised. This plan is the
-> FPGA + driver work to un-dormant it. **Not yet started.**
+> **⛔ STATUS: PHASE A ATTEMPTED, PARKED at an integration blocker (2026-07-15).**
+> Prereq context: internal-mode H2C does **not** honour multi-descriptor SOP/EOP
+> framing (6-encoding driver sweep all failed; on-wire capture showed fragmented
+> frames truncated by one 64 B beat). Phase A (loopback bring-up) was built and
+> run on hardware **twice** and failed Gate A both times — see §12.14. Root cause
+> is **not** the byp module (it is now byte-identical to Xilinx's `dsc_byp_h2c.sv`);
+> it is **QDMA bypass integration** the OpenNIC driver/shell never configured.
+> Parked pending a dedicated card window + a driver-side path (see §12.14). The
+> driver-side SG datapath and the byp module exist but are **uncommitted WIP**;
+> `NETIF_F_SG` is not advertised.
 
 ## 12.1 The design in one paragraph
 
@@ -296,3 +300,107 @@ Instantiate in `qdma_subsystem.sv` in place of lines 307-320, connecting the exi
 `h2c_byp_out_*` / `h2c_byp_in_st_*` wires (already routed to both `qdma_no_sriov`
 instances). Tie the handful of `byp_in` fields the module omits (`_error` if unused,
 etc.) to 0 at the instantiation if not driven.
+
+## 12.14 Phase A execution result (2026-07-15) — PARKED at integration blocker
+
+Phase A was built and run on hardware **twice**; both failed **Gate A**. The board
+(au200 on `.223`) is shared with Tenstorrent's RoCEv2 project (flash `1e52:4001`,
+`rocev2` driver) — flashing the eth bitstream over it crashed `rocev2` once and needed
+a host reboot; testing was done via volatile `.bit` (JTAG from the build host) so a
+power-cycle restores the RoCEv2 design.
+
+**Both builds:** timing met, `qdma_subsystem_h2c_byp` synthesized in, driver bound in
+bypass mode (`h2c_bypass=1` module param), netdevs up, SG off.
+
+**A/B isolation (same bitstream, `h2c_bypass` toggled):**
+
+| | internal (`=0`) | bypass (`=1`) |
+|---|---|---|
+| TCP iperf3 | **9.36 Gbit/s, 0 retr** | 0 bytes |
+| UDP 3G blast → peer RX | 100 % delivered | **16 / 1.5M (~0 %)** |
+| backpressure | normal | **none** (sender full rate) |
+
+- **Iter 1** (naive combinational passthrough): failed as above.
+- **Iter 2** (byp module made byte-identical to Xilinx `dsc_byp_h2c.sv` ST path —
+  added `~fmt[0] & ~st_mm` gating on `byp_in_st_vld`, marker-response `rdy=1`):
+  **identical failure.**
+
+**Conclusion — root cause is NOT the byp module logic** (it matches Xilinx's reference
+exactly and still fails), **it is QDMA bypass integration.** Signature: full send rate,
+no backpressure, ring `cidx` advancing, ~0 on the wire ⇒ `cidx` advances on descriptor
+**fetch** (`byp_out`) while the `byp_in` submission never actually DMAs/transmits.
+`sw_ctxt.bypass=1` routes descriptors *out*, but the bypass *datapath* needs more that
+OpenNIC (which never used bypass) doesn't set up — most likely a **global
+descriptor-bypass enable** and/or a **fetch-credit/writeback** setting in the queue
+context (`fcrd_en`, `wbi_*`).
+
+**To resume (needs a dedicated card window):**
+1. Offline first: study the QDMA example-design *driver/software* (same tree as
+   `dsc_byp_h2c.sv`: `.../XilinxCEDStore/.../cpm5_qdma*/`) for how it configures a
+   descriptor-bypass H2C ST queue — global enable, `fcrd_en`, writeback/credit — and
+   check PG302's descriptor-bypass queue-setup requirements.
+2. Add an **ILA** on `byp_out_*`/`byp_in_st_*` (+ CMAC tx handshake) to capture, on
+   hardware, whether `byp_in` DMA fires and where the `cidx`/transmission decouple.
+3. Only then iterate the driver `qdma_sw_ctxt`/global-enable + one rebuild.
+
+**Do NOT** resume by flashing the shared RoCEv2 card without coordination.
+
+**WIP artifacts (uncommitted):** shell `src/qdma_subsystem/qdma_subsystem_h2c_byp.sv`
++ the tie-off replacement in `qdma_subsystem.sv`; driver `h2c_bypass` module param +
+`sw_ctxt.bypass` in `onic_hardware.c`. Build script
+`script/build_eth_1pf_2cmac_sgbyp_a.sh` (tag `eth_1pf_2cmac_sgbyp_a`).
+
+### 12.14.1 Iteration 3 (2026-07-15, post-reboot) — driver config + register diagnosis
+
+After a clean reboot (Phase-A eth bitstream survived, `rocev2` not auto-loaded), pursued
+the QDMA-bypass *configuration* hypothesis (research vs Xilinx `dma_ip_drivers`):
+
+- **IP capability confirmed OK, rules out regen.** `GLBL2_MISC_CAP @ 0x134` reads
+  `0x01200000` → bits[3:2]=`00` = `INTERNAL_BYPASS`. The IP *does* support descriptor
+  bypass (matches the `dsc_byp_mode {Descriptor_bypass_and_internal}` IP config). So
+  `sw_ctxt.bypass=1` is a valid request; no IP regen needed. (pcimem read validated:
+  0x134 reads back correctly.)
+- **`fetch_max=7` did NOT fix it.** The reference sets `fetch_max=FETCH_MAX_NUM(7)` for
+  every non-64B ST queue (OpenNIC left it 0). Added it for bypass queues → bypass still
+  delivers ~0 (peer RX 18/1.3M), TCP 0 bytes.
+- **Behavioural localization:** descriptors are submitted at full rate, ring `cidx`
+  advances (no backpressure), yet the H2C DMA/transmit engine appears to process none —
+  i.e. the `byp_out→byp_in` loop is not delivering descriptors to the DMA engine, even
+  though the byp module is byte-identical to Xilinx `dsc_byp_h2c.sv` and the queue context
+  now matches the reference (`bypass=1`, `fetch_max=7`, `mrkr_dis=0`, `desc_sz=16B`).
+- **H2C debug registers (`0xE0C/0xE10/...`) read 0** but could not be validated (the
+  QSFP0↔peer link went flaky during the churn, so no confirmed-working control read was
+  possible; treat these counters as unconfirmed offsets for this IP version).
+
+**Conclusion:** the blocker is at the QDMA descriptor-bypass *integration* boundary and
+is **not** resolvable by more register poking or blind rebuilds. Definitive next step is
+an **ILA** on `h2c_byp_out_*`/`h2c_byp_in_st_*` (+ CMAC tx) to see whether `byp_out_vld`
+asserts, whether the module forwards, and whether `byp_in` is accepted — on a
+**dedicated card with a stable link**. Given reference-correct logic + confirmed IP
+capability, a Xilinx QDMA support question is warranted in parallel.
+
+**Driver-side config now matched to the reference (WIP):** `sw_ctxt.bypass` +
+`sw_ctxt.fetch_max=7` in `onic_hardware.c` (both gated on the `h2c_bypass` module param).
+Register-read method for resume: QDMA CSRs are BAR0 (`resource0`); `pcimem <resource0>
+<off> w`; key offsets `0x134` (cap), `0xE00` (H2C err), `0xE0C-0xE1C` (H2C dbg), `0x248`
+`0x254` (glbl err).
+
+### 12.14.2 Dead-ends confirmed (so the resumer doesn't repeat them)
+
+- **H2C debug registers `0xE0C/0xE10/0xE14` are the WRONG offsets for this IP** — they
+  read `0x00000000` even during a confirmed-working 9.23 Gbit/s internal-mode transfer.
+  Register-level localization needs the correct IP register map (or an ILA). Only
+  `0x134` (GLBL2_MISC_CAP) is confirmed valid.
+- **No in-house QDMA descriptor-bypass reference exists.** Checked RecoNIC
+  (`../RecoNIC/base_nics/open-nic-shell`) and the Tenstorrent rocev2 design/driver
+  (`../rocev2-rtl-vivado`) — neither drives the QDMA `byp_in`/`byp_out` interface; both
+  run the QDMA in internal mode. So there is no local working example to diff against;
+  the only reference is Xilinx's `dsc_byp_h2c.sv` (already matched) + the QDMA example
+  *design's* driver software.
+- **`fetch_max`/`frcd_en` are fetch-side knobs** and don't address a `byp_in`→DMA
+  delivery failure (the fetch side works — `cidx` advances).
+
+**Genuinely remaining path:** ILA on `h2c_byp_out_*`/`h2c_byp_in_st_*` (dedicated card,
+stable link) and/or a **Xilinx QDMA support case** — the situation (IP bypass-capable,
+queue context + byp RTL both reference-correct, yet `byp_in` doesn't deliver) is exactly
+a vendor-integration question. Not resolvable by further offline/register work here.
