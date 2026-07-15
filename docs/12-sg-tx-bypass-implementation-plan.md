@@ -10,11 +10,18 @@ blocker found there.
 > Prereq context: internal-mode H2C does **not** honour multi-descriptor SOP/EOP
 > framing (6-encoding driver sweep all failed; on-wire capture showed fragmented
 > frames truncated by one 64 B beat). Phase A (loopback bring-up) was built and
-> run on hardware **twice** and failed Gate A both times — see §12.14. Root cause
-> is **not** the byp module (it is now byte-identical to Xilinx's `dsc_byp_h2c.sv`);
-> it is **QDMA bypass integration** the OpenNIC driver/shell never configured.
-> Parked pending a dedicated card window + a driver-side path (see §12.14). The
-> driver-side SG datapath and the byp module exist but are **uncommitted WIP**;
+> run on hardware **twice** and failed Gate A both times — see §12.14.
+>
+> **⚠️ RE-DIAGNOSIS (2026-07-15, offline, §12.14.3):** the earlier "root cause is
+> QDMA integration, needs ILA + vendor case" conclusion is now considered
+> **premature**. The byp module was matched against the **wrong IP's** reference —
+> `cpm5_qdma/dsc_byp_h2c.sv` is the **Versal CPM5 hardened** QDMA, but the U200
+> (`xcu200`, Virtex UltraScale+) uses the **soft `qdma_v5_1` (EQDMA soft)** IP.
+> Their bypass interfaces differ (`fmt` `[2:0]`vs`[3:0]`, `qid` `[11:0]`vs`[10:0]`,
+> `func` `[11:0]`vs`[7:0]`), and the module **dropped the marker loopback**
+> (`mrkr_req`/`mrkr_rsp`) that the soft IP's bypass interface defines. There is an
+> **offline RTL fix to try before any card/ILA/vendor step** — see §12.14.3.
+> The driver-side SG datapath and the byp module exist but are **uncommitted WIP**;
 > `NETIF_F_SG` is not advertised.
 
 ## 12.1 The design in one paragraph
@@ -395,12 +402,84 @@ Register-read method for resume: QDMA CSRs are BAR0 (`resource0`); `pcimem <reso
   (`../RecoNIC/base_nics/open-nic-shell`) and the Tenstorrent rocev2 design/driver
   (`../rocev2-rtl-vivado`) — neither drives the QDMA `byp_in`/`byp_out` interface; both
   run the QDMA in internal mode. So there is no local working example to diff against;
-  the only reference is Xilinx's `dsc_byp_h2c.sv` (already matched) + the QDMA example
-  *design's* driver software.
+  the only reference is Xilinx's `dsc_byp_h2c.sv` + the QDMA example *design's* driver
+  software. **Correction (§12.14.3):** the `dsc_byp_h2c.sv` that was "matched" is the
+  **CPM5 (Versal)** variant — the wrong IP family for this soft-`qdma_v5_1` U200 design;
+  the correct soft-IP reference is the (encrypted) `qdma_v5_1` example design.
 - **`fetch_max`/`frcd_en` are fetch-side knobs** and don't address a `byp_in`→DMA
   delivery failure (the fetch side works — `cidx` advances).
 
-**Genuinely remaining path:** ILA on `h2c_byp_out_*`/`h2c_byp_in_st_*` (dedicated card,
+**~~Genuinely remaining path:~~** ILA on `h2c_byp_out_*`/`h2c_byp_in_st_*` (dedicated card,
 stable link) and/or a **Xilinx QDMA support case** — the situation (IP bypass-capable,
 queue context + byp RTL both reference-correct, yet `byp_in` doesn't deliver) is exactly
 a vendor-integration question. Not resolvable by further offline/register work here.
+
+> **Superseded by §12.14.3.** The "byp RTL is reference-correct" premise was false —
+> it was matched against the wrong IP family. Try the offline RTL fix first.
+
+### 12.14.3 Offline re-investigation (2026-07-15) — wrong-IP reference + dropped marker loopback
+
+A fresh offline audit (no card) of the full driver↔RTL↔IP path found that the Phase-A
+premise "byp RTL is reference-correct" is **wrong**, which reopens an offline fix path
+that predates any ILA/vendor step.
+
+**What is confirmed CORRECT (so stop re-checking these):**
+- **Driver `sw_ctxt.bypass` lands on the right bit.** The deployed encoder is the
+  homegrown `open-nic-driver/qdma_legacy/qdma_context.c` (not the vendored libqdma).
+  Its `QDMA_SW_CTXT_W1_BYPASS_MASK = BIT(18)` matches EQDMA v5's
+  `SW_IND_CTXT_DATA_W1_BYPASS_MASK = BIT(18)` exactly; MRKR_DIS `BIT(30)` and FCRD_EN
+  `BIT(1)` also match. Only `fetch_max` width differs (legacy `GENMASK(7,5)` 3-bit vs
+  EQDMA `GENMASK(8,5)` 4-bit) — **benign for value 7**. So bypass is validly requested.
+- **Descriptor packing ↔ RTL extraction are self-consistent.** Driver packs (in
+  `qdma_export.c`, masks in `qdma_export.h`): metadata `[31:0]`, len `[47:32]`, flags
+  `[63:48]` (SOP=`BIT(0)`→bit48, EOP=`BIT(1)`→bit49), src_addr `[127:64]`. The byp
+  module reads `len=dsc[47:32]`, `sop=dsc[48]`, `eop=dsc[49]`, `addr=dsc[127:64]` —
+  matches, and matches the EQDMA5 layout that works in internal mode.
+- **IP is generated for bypass.** `vivado_ip/qdma_no_sriov_au200.tcl:25`
+  `dsc_byp_mode {Descriptor_bypass_and_internal}`, ST-only
+  (`AXI_Stream_with_Completion`, `en_axi_mm false`).
+- **Wiring IP↔module is intact both directions** (`qdma_subsystem.sv:310-335`,
+  `:412-437`).
+
+**What is WRONG (the actual leads):**
+1. **The byp module was copied from the wrong IP family.** Reference used was
+   `cpm5_qdma/src/dsc_byp_h2c.sv` = **Versal CPM5 hardened** QDMA. The U200 (`xcu200`,
+   Virtex UltraScale+) uses the **soft `qdma_v5_1` (EQDMA soft)** IP. Proof they differ:
+   the CPM5 reference declares `fmt[2:0]` (marker=`3'b1`), `qid[11:0]`, `func[11:0]`;
+   our soft-IP wires are `fmt[3:0]` (module checks `4'h1`), `qid[10:0]`, `func[7:0]`.
+   The correct reference — `/opt/amd/2025.2/data/ip/xilinx/qdma_v5_1/ttcl/`
+   `dsc_byp_h2c_sv.ttcl` — is **encrypted**, so it was never actually diffed. The
+   `fmt`/`st_mm` decode that gates `h2c_byp_in_st_vld` may be wrong for the soft IP,
+   which is exactly the failure point (descriptor consumed → `cidx` advances via
+   `byp_out_rdy`, but `byp_in` never fires → 0 bytes, no backpressure).
+2. **The module dropped the marker loopback.** The reference does
+   `h2c_byp_in_st_mrkr_req = h2c_st_marker_req` and drives `h2c_st_marker_rsp` back to
+   the IP; `qdma_subsystem_h2c_byp.sv:80` hardwires `h2c_byp_in_st_mrkr_req = 1'b0` and
+   just swallows `fmt==1` with `rdy=1`. The **soft IP's bypass interface defines
+   `mrkr_req`/`mrkr_rsp`** (`/opt/amd/2025.2/data/ip/interfaces/qdma_dsc_byp_v1_0/`),
+   so these are real ports on our IP that are currently unserviced. "Byte-identical to
+   reference" held for the ST *datapath fields* only — it missed the marker ports.
+
+**On "just use libqdma as a submodule":** the deployed driver deliberately uses the
+homegrown `qdma_legacy` (minimal, netdev-shaped) rather than the full libqdma framework
+(char-dev/ioctl/own-threading — a rearchitecture to embed). We *do* vendor libqdma
+twice (`onic-driver/libqdma/`, `../dma_ip_drivers/QDMA/linux-kernel/`) — so the move is
+to **mirror libqdma's bypass queue-setup sequence** into the homegrown path, not adopt
+it wholesale. Extracted sequence (from `dma_ip_drivers .../libqdma/qdma_context.c`
+`make_sw_context()` + start path): for a 16B bypass H2C ST queue set `bypass=1`,
+`fetch_max=7`, `frcd_en=fetch_credit`, `mrkr_dis=0`, `qen=1`, `is_mm=0`, plus
+per-function **FMAP (qbase/qmax)** and global **`GLBL_DSC_CFG.MAX_DSC_FETCH`**. Note:
+H2C ST needs **no prefetch/credit context** (those are C2H-only) — so `onic_hardware.c`
+clearing hw/cr and skipping prefetch is correct. But **a driver fix alone cannot fix an
+RTL byp module that speaks the wrong IP's dialect** — do the RTL fix too.
+
+**Revised resume plan (offline first, only then card):**
+1. **Vivado `open_example_project`** on the soft `qdma_v5_1` IP → extract the plaintext,
+   correct-IP `dsc_byp_h2c.sv` (EQDMA soft). Diff `fmt`/`st_mm` decode and descriptor
+   bit layout against `qdma_subsystem_h2c_byp.sv`.
+2. **Rebuild the byp module against the soft-IP reference** — correct `fmt`/`st_mm`
+   gating, and **restore the marker loopback** (wire `mrkr_req`/`mrkr_rsp` to the IP's
+   top-level `h2c_st_marker_req`/`_rsp` — currently absent from `qdma_subsystem.sv`).
+3. **Mirror libqdma's bypass queue setup** in `onic_hardware.c` (FMAP + `GLBL_DSC_CFG`
+   in particular — verify OpenNIC programs them; these are the likeliest driver gaps).
+4. One rebuild → retest on a dedicated card. ILA / vendor case only if this still fails.
