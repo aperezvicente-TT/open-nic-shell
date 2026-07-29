@@ -67,14 +67,48 @@ Today `rx_dropped` reads 0 while packets are discarded; the only evidence is
 
 This is Ch. 10 §1.6, is required to validate every later step, and needs no RTL.
 
-## 13.3 Step 1 — driver-side pause control (S)
+## 13.3 What is already configured (checked against live hardware)
 
-Implement `get_pauseparam` / `set_pauseparam` against the CMAC flow-control CSRs
-(`CONF_RX_FC_CTRL_1/2` at `+0x0084/0x0088`, Ch. 9 §9.5), so `ethtool -a/-A` works
-and RX pause *reaction* (honouring pause frames the peer sends) can be turned on.
+The CMAC's pause/PFC machinery is **enabled and fully programmed** — this is not a
+configuration gap. Read back from CMAC0 while running:
 
-Note the asymmetry: making the CMAC **obey** incoming pause is CSR-only. Making it
-**generate** pause needs Step 2, because something has to decide when.
+```
+CONF_TX_FC_CTRL_1 (BAR2 0x8030) = 0x000001FF   9 enables = 8 PFC priorities + global pause
+CONF_RX_FC_CTRL_1 (BAR2 0x8084) = 0x00003DFF   9 RX pause enables + GCP/PCP check bits
+CONF_RX_FC_CTRL_2 (BAR2 0x8088) = 0x0001C631
+```
+
+`onic_enable_cmac()` (`onic_hardware.c:243-258`) writes those plus **all five quanta
+and all five refresh registers to maximum** (`0xFFFFFFFF`…`0x0000FFFF`) on every CMAC
+enable. Note it is *not* enabled through IP generics — `cmac_usplus_0_au200.tcl` sets
+no flow-control `CONFIG.*` parameter, so with `ENABLE_AXI_INTERFACE=1` the whole
+configuration lives in these AXI-Lite CSRs.
+
+**So the only thing missing for pause generation is the request.** That shrinks Step 2:
+no CSR work, just the RTL path in §13.4.
+
+Two consequences worth carrying into the implementation:
+
+- **Quanta are maxed (0xFFFF per priority).** The first pause frame we ever emit would
+  request the longest possible duration, and refresh is likewise maxed. Over-long
+  pause converts a drop problem into a stall problem — these want tuning alongside
+  §13.4, not leaving at reset-max.
+- **`ethtool -a/-A` still needs implementing** (Ch. 10 §1.5) so the feature is
+  operator-visible and switchable, but it is reporting/40-line work, not enablement.
+
+### 13.3.1 Separate bug: we ignore pause frames sent *to* us
+
+`stat_rx_pause_req[8:0]` — the CMAC's "the peer is asking us to pause" output — is
+wired to the IP instance (`cmac_subsystem_cmac_wrapper.sv:611`, `:935`) and then
+**never read by any shell logic**. The CMAC USplus does not auto-throttle TX on
+received pause; the user logic must do it. So a congested peer that pauses us is
+ignored and we keep transmitting.
+
+Latent on this bench (`stat_rx_pause = 0` — no peer has ever needed to pause us), but
+it is an 802.3x conformance bug against any real congested switch, it is on the
+**transmit** side, and it is independent of the RX drop story in §13.1. Fix alongside
+§13.4 since it touches the same wrapper: gate the H2C/TX path on
+`stat_rx_pause_req`, per CMAC.
 
 ## 13.4 Step 2 — RTL: drive `ctl_tx_pause_req` from RX-path fill (M, the actual fix)
 
@@ -89,9 +123,10 @@ piece is a fill-level signal to drive it. Design:
    thresholds via the existing FIFO generics rather than new logic where possible.
 3. Drive `ctl_tx_pause_req[8]` (global pause) — or a chosen priority for PFC later —
    and hold it for the CMAC's configured quanta.
-4. Program the CMAC pause quanta / refresh registers at init, and gate the whole
-   feature on the driver's `set_pauseparam` so it defaults to today's behaviour
-   until deliberately enabled.
+4. The quanta / refresh registers are already programmed (§13.3) — **retune them
+   down from 0xFFFF** rather than programming them, and gate the whole feature on the
+   driver's `set_pauseparam` so it defaults to today's behaviour until deliberately
+   enabled.
 
 **Per-CMAC scoping matters.** The two CMACs share one PF and one QDMA. Pause must be
 asserted for the CMAC whose queues are backing up, not both, or one port's overload
