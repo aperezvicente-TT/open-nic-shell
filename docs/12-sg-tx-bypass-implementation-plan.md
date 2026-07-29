@@ -474,12 +474,61 @@ clearing hw/cr and skipping prefetch is correct. But **a driver fix alone cannot
 RTL byp module that speaks the wrong IP's dialect** — do the RTL fix too.
 
 **Revised resume plan (offline first, only then card):**
-1. **Vivado `open_example_project`** on the soft `qdma_v5_1` IP → extract the plaintext,
-   correct-IP `dsc_byp_h2c.sv` (EQDMA soft). Diff `fmt`/`st_mm` decode and descriptor
-   bit layout against `qdma_subsystem_h2c_byp.sv`.
-2. **Rebuild the byp module against the soft-IP reference** — correct `fmt`/`st_mm`
-   gating, and **restore the marker loopback** (wire `mrkr_req`/`mrkr_rsp` to the IP's
-   top-level `h2c_st_marker_req`/`_rsp` — currently absent from `qdma_subsystem.sv`).
+1. ~~Vivado `open_example_project`~~ **DONE (see §12.14.4).** Extracted the plaintext
+   soft-IP reference (`qdma_v5_0`, Vivado 2024.2 — the version the bitstream is built
+   with; not `v5_1`). Result: the datapath decode concern is **refuted**; the missing
+   **marker/qsts completion handshake** is confirmed as the concrete integration gap.
+2. **Implement the marker/qsts handshake in the shell** (§12.14.4) + restore
+   `h2c_byp_in_st_mrkr_req = h2c_st_marker_req` in the byp module.
 3. **Mirror libqdma's bypass queue setup** in `onic_hardware.c` (FMAP + `GLBL_DSC_CFG`
    in particular — verify OpenNIC programs them; these are the likeliest driver gaps).
 4. One rebuild → retest on a dedicated card. ILA / vendor case only if this still fails.
+
+### 12.14.4 Correct soft-IP reference extracted (2026-07-15) — marker/qsts handshake is the gap
+
+Generated the `qdma_v5_0` descriptor-bypass example design headlessly
+(`open_example_project`, xcu200, same IP config as `qdma_no_sriov_au200.tcl`) to get
+the **plaintext, correct-IP** `dsc_byp_h2c.sv` that was never diffed. Artifacts in
+scratchpad `qdma_exdes/exdes/qdma_no_sriov_ex/imports/` (`dsc_byp_h2c.sv`,
+`qdma_qsts.sv`, `qdma_app.sv`).
+
+**The CPM5-vs-soft datapath worry is REFUTED.** The soft `qdma_v5_0` `dsc_byp_h2c.sv`
+is **logically identical** to the CPM5 one — same `fmt[2:0]`/marker `3'b1`/`~fmt[0]`
+gating and byte-identical ST extraction (`addr=dsc[127:64]`, `len=dsc[47:32]`,
+`sop=dsc[48]`, `eop=dsc[49]`, `sdi=dsc[49]`). The only soft-vs-CPM5 differences are
+port widths (`qid[10:0]`, `func[7:0]`), which **already match** OpenNIC's wires. So
+`qdma_subsystem_h2c_byp.sv`'s datapath decode is correct for our IP — no rewrite needed.
+
+**The confirmed gap: the marker/qsts completion handshake, which OpenNIC never wired
+(it was built for internal mode).** In descriptor-bypass mode the user logic must
+service it; the example design does three things OpenNIC's shell does not:
+1. **`qsts_out` → marker_rsp.** The IP's queue-status stream (`qsts_out_*`) is consumed
+   by a tiny `qdma_qsts` module (13 lines) that raises `h2c_st_marker_rsp` when
+   `h2c_st_marker_req & qsts_out_vld & qsts_out_op==8'h1`. In OpenNIC's
+   `qdma_subsystem_qdma_wrapper.v:448-453` **`qsts_out_*` is left unconnected**
+   (outputs dangling, `qsts_out_rdy` tied `1'b1`).
+2. **IP marker ports.** The IP's `h2c_st_marker_req` (out) / `h2c_st_marker_rsp` (in)
+   are **not connected** in OpenNIC's wrapper (the `rsp` input floats). The example
+   wires them (`qdma_app.sv:492-493`).
+3. **byp_in marker injection.** Reference: `h2c_byp_in_st_mrkr_req = h2c_st_marker_req`;
+   OpenNIC's byp module hardwires it `1'b0`.
+
+**Why this fits the symptom:** datapath is reference-correct (descriptors fetch → `cidx`
+advances) but the H2C ST descriptor-bypass **completion/marker loop is open**, so the
+mover never closes a transfer → ~0 bytes, no backpressure. This is the classic
+"internal-mode shell + bypass queue, completion side never implemented" failure.
+
+**Fix (small, offline, one rebuild):**
+- Add a `qdma_qsts`-equivalent in the shell fed by the IP's `qsts_out_*` (currently
+  dropped in `qdma_subsystem_qdma_wrapper.v`), producing `{h2c,c2h}_{st,mm}_marker_rsp`.
+- Wire the IP's `h2c_st_marker_req`/`h2c_st_marker_rsp` (and C2H for symmetry) through
+  the wrapper.
+- In `qdma_subsystem_h2c_byp.sv`, add the marker ports and set
+  `h2c_byp_in_st_mrkr_req = h2c_st_marker_req` (drop the `1'b0` tie).
+- Keep the driver bypass queue-context as is (already correct); optionally add FMAP +
+  `GLBL_DSC_CFG` per §12.14.3 while at it.
+
+**Caveat (honest):** offline analysis can't *prove* the marker loop is what gates data
+(vs. only clean queue-stop) — but it is the single confirmed divergence from the working
+reference for bypass mode, matches the signature, and is a small buildable change. It is
+the right thing to try before any ILA/vendor step.
