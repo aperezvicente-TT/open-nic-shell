@@ -151,14 +151,22 @@ is possible in the design but unnecessary against a Gen3 ×4 peer.
 shows that was wrong: the peer's `rx_dropped`/`rx_missed_errors` stay at **0**
 throughout and we exceed 20 Gbit/s routinely.
 
-Measured, MTU 9000 both ends, iperf3 `-P 8`, servers pinned to the card's NUMA node:
+Measured, MTU 9000 both ends, iperf3 `-P 8`, servers pinned to the card's NUMA node,
+**with C2H completion coalescing enabled** (`onic` module parameters
+`cmpl_cnt_idx=7 cmpl_tmr_idx=8` → cnt_th 64 packets / tmr_cnt 25):
 
 | Test | Result |
 |------|--------|
-| RX, one port | 63-69 Gbit/s |
-| RX, both ports | ~70 Gbit/s aggregate (35 + 35, reproducible) |
+| RX, one port | **98.5** Gbit/s (CMAC0), **96.7** (CMAC1) — 100G line rate |
+| RX, both ports | **104.5** Gbit/s aggregate (52.6 + 51.9), 1.46 Mpps, 19 drops |
 | TX, one port | up to 88 Gbit/s, **0** retransmits |
 | Latency, concurrent ping on 4 paths | 0% loss, 0.097-0.118 ms avg |
+
+> **The coalescing default is the single biggest performance factor.** With the
+> shipped `cnt_th=2 / tmr_cnt=1` (an interrupt every couple of packets) the same
+> RX test yields only **36.8 Gbit/s**. See the driver commit `f33fed9` for the
+> sweep. At 104.5 Gbit/s aggregate the limit is PCIe Gen3 x16 (~110 Gbit/s usable
+> of 126 raw), not the datapath.
 
 Three measurement traps, all of which produced wrong numbers before being found:
 
@@ -169,15 +177,17 @@ Three measurement traps, all of which produced wrong numbers before being found:
 2. **CMAC `ethtool -S` counters clear on read.** Deltas across two reads go
    *negative*. Use the plugin counters at BAR2 `0x100000+` for loss accounting;
    their in/out pairs match exactly.
-3. **MTU.** 1500 caps RX at ~7.7 Gbit/s and does not scale with streams; 9000 is
-   required for any meaningful number.
+3. **Completion coalescing dominates everything else** — see the note above. Any
+   measurement taken with the default `cmpl_cnt_idx=0` understates RX by ~2.7x.
 
-RX throughput does **not** scale with queue count (68.1 / 58.6 / 61.7 Gbit/s at
-`-P 8` / `16` / `32`, spreading over 6 / 8 / 12 queues) and no CPU is saturated
-(busiest softirq 85% of one core at 6 queues, 55% at 12), so the RX ceiling is in
-the DMA path, not host CPU. **These numbers are contaminated by the C2H qid defect
-in Ch. 11 §11.13** — re-measure after that fix before treating any of them as the
-datapath's real limit.
+MTU still matters, but far less than first thought: at the default coalescing,
+MTU 1500 measures **31-34 Gbit/s at 2.7-2.9 Mpps** (an earlier claim here of
+"~7.7 Gbit/s" was wrong — it came from unpinned runs on the pre-fix bitstream).
+Nor was the ceiling ever in the DMA engine: raising the descriptor and completion
+rings 8x (`rngcnt_pool[0]`=2049 → `[15]`=16385) changed single-queue drops by less
+than 1% (30,610 → 31,609), so ring depth is not the lever either — those drops are
+one queue's drain rate, which RSS spreading already mitigates (0.83% on 1 queue →
+0.007% on 14).
 
 ### Diagnosing QDMA C2H errors
 
