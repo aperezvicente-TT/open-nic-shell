@@ -235,9 +235,42 @@ ACK-clocked and smooth), which 0.5 s counter sampling cannot resolve. Settling i
 needs sub-millisecond arrival measurement or a hardware burst-depth counter — not
 another parameter sweep.
 
-**Practical read:** at line rate with TCP the drops are ≤0.33% with zero errors, and
-are that sender's own congestion signal at the capacity boundary. Do not chase them
-without the instrument above.
+### 8.8.2 Comparison against a production NIC — this IS a real gap
+
+The same ladder was run against a **ConnectX-7** (`mlx5_core`) on the same host, over
+the CX-7↔CX-7 link to the same peer, at the same MTU 9000, with the same iperf3
+binary and direction (this host receiving):
+
+| Offered | FPGA (`onic`) drop % | ConnectX-7 drop % |
+|---------|----------------------|-------------------|
+| 20 G | 0.0000 | 0.0000 |
+| 40 G | **1.2 - 1.9** (every run) | **0.0000 / 0.0753 / 0.0000** (3 repeats) |
+| 64 G | **3.6** | ~0.01 (91 packets) |
+
+Both NICs show the same *qualitative* behaviour — nothing at 20 G, drops appearing
+above it — so overload discarding is universal and expected. But the **magnitude is
+not comparable**: at 40 G the CX-7 absorbs unpaced UDP essentially losslessly
+(usually exactly zero), while this datapath drops 1-2% on every run. That is one to
+two orders of magnitude worse, and it is a genuine gap rather than benign overload
+behaviour.
+
+It also absorbs more before degrading: at 64 G offered the CX-7 achieved 63.3 Gbit/s
+/ 877k pps at ~0.01% loss, where this datapath achieved 55.7 Gbit/s / 814k pps at
+3.6%.
+
+**Second gap — observability.** The CX-7's drops appear in the standard netdev
+counter (`rx_dropped` equalled the hardware counter exactly: 919 and 919), so an
+operator sees them with `ip -s link`. Ours are invisible there — netdev `rx_dropped`
+stays 0 while packets disappear, and the only evidence is `DESC_RSP_DROP` in BAR0
+`0xB10`. Surfacing that through `get_stats64` / `ethtool -S` is Ch. 10 §1.6 and
+should be done before anyone operates this in anger.
+
+**Practical read (revised):** under TCP at line rate the drops are ≤0.33% and act as
+that sender's congestion signal, so they do not stop the NIC working — but the UDP
+comparison above shows the underlying receive path is materially less robust to
+unpaced bursts than a production NIC, and the drops are unreported. Both are worth
+fixing; neither is chaseable by further parameter sweeps without the
+sub-millisecond instrument named above.
 
 > Robustness note found during this work: `rx_desc_step` larger than the ring
 > silently wedged the RX datapath (step 4096 vs a 2049-entry ring accepted zero
