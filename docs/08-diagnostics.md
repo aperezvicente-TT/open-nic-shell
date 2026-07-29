@@ -196,14 +196,52 @@ than 1% (30,610 → 31,609), so ring depth is not the lever for *those* drops �
 are one queue's drain rate, which RSS spreading already mitigates (0.83% on 1 queue
 → 0.007% on 14).
 
-⚠️ Coalescing introduces a **separate** drop population: at 64 frames / 3 µs under
-saturating load, `DESC_RSP_DROP` runs 0.06-0.33% where the old default gave ~0.
-Deeper rings initially looked like a fix (560 vs 36,510 drops) but **did not
-replicate** — repeats at 1537/3073/4097 entries gave 0.0003-0.091% with ~20x swings
-between identical runs, and 1537 (smaller than the 2049 default) scored best once.
-Ring depth does not reliably control them; they need a controlled characterisation
-(fixed rate, longer runs, per-queue attribution) before anything is concluded.
-`desc_rngcnt_idx` / `cmpl_rngcnt_idx` are exposed for that work.
+### 8.8.1 The C2H drop population, characterised
+
+Coalescing introduces a drop population the old default did not have: under
+saturating TCP, `DESC_RSP_DROP` runs 0.06-0.33% where before it was ~0. Measured
+properly — **fixed-rate UDP** (TCP self-adjusts and confounds the offered rate),
+MTU 9000, 14 queues, 64f/3µs, counters sampled every 0.5 s:
+
+| Offered | Achieved | Accepted | Drops | Drop % | Samples with drops |
+|---------|----------|----------|-------|--------|--------------------|
+| 20 G | 20.0 Gbit/s | 280,858 pps | 0 | **0.0000** | 0/30 |
+| 40 G | 39.4 Gbit/s | 561,809 pps | 8,276 pps | 1.4732 | 30/30 |
+| 64 G | 55.7 Gbit/s | 813,828 pps | 29,431 pps | 3.6164 | 30/30 |
+| 96 G | 56.7 Gbit/s | 810,403 pps | 14,146 pps | 1.7455 | 30/30 |
+
+Established:
+
+- **There is an onset, not a constant leak.** Zero drops at 280k pps; drops scale
+  with delivered rate above that (0.02-0.15% at ~390-410k, 1.2-1.9% at ~560k).
+- **They are steady, not bursty** at 0.5 s resolution — above onset, all 30 of 30
+  samples show drops. "Bursty load" was the wrong model.
+- **`DESC_RSP_ERR_ACCEPTED` is 0 throughout.** These are drops, never protocol
+  errors, and they are distinct from the MTY/LEN condition in Ch. 11 §11.14.
+- **Neither buffer knob matters.** Ring depth across 8x (2049 / 3073 / 16385) and
+  the posted-descriptor window across 4x (256 / 1024) both land inside run-to-run
+  variance at comparable delivered rates.
+
+The reason ring depth is irrelevant is structural: `onic_rx_high_watermark()`
+refills below `rx_desc_step/2` and `onic_rx_refill()` advances by `rx_desc_step`,
+so steady state posts only **[step/2, 1.5·step]** descriptors — ~128-384 at the
+default — *whatever the ring size*. The ring was never the constraint.
+
+**Open question, stated honestly:** TCP sustains ~1.37 Mpps at only 0.06-0.33%
+drops — 2.4x the packet rate at which UDP drops 1.2%. Average rate and buffer
+sizing therefore cannot be the whole story; the remaining variable is
+short-timescale arrival shape (iperf3 UDP bursts inside its pacing interval, TCP is
+ACK-clocked and smooth), which 0.5 s counter sampling cannot resolve. Settling it
+needs sub-millisecond arrival measurement or a hardware burst-depth counter — not
+another parameter sweep.
+
+**Practical read:** at line rate with TCP the drops are ≤0.33% with zero errors, and
+are that sender's own congestion signal at the capacity boundary. Do not chase them
+without the instrument above.
+
+> Robustness note found during this work: `rx_desc_step` larger than the ring
+> silently wedged the RX datapath (step 4096 vs a 2049-entry ring accepted zero
+> packets, no error logged). Now clamped with a warning — driver `ad1a5d1`.
 
 ### Diagnosing QDMA C2H errors
 
