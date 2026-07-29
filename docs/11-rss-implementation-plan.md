@@ -308,3 +308,74 @@ out-of-context (3347 cells).
 - Consider carrying the RSS low bits in the `buf_fifo` TUSER alongside the data,
   as v5.2.10 did for the external qid, so correctness no longer depends on two
   independent pipelines staying aligned.
+
+## 11.14 §11.13 hypothesis DISPROVEN — rebuilt, reflashed, re-measured (2026-07-29)
+
+The `S_S1_MORE` handshake guard was built (stamp `0x07290823`, WNS +0.020 ns) and
+flashed. **It did not change the C2H error behaviour**, so the handshake defect —
+real though it is — is not the cause of `MTY_MISMATCH`/`LEN_MISMATCH`:
+
+| Config | errIRQ before (`0x07290109`) | errIRQ after (`0x07290823`) |
+|--------|------------------------------|------------------------------|
+| 14 queues, unlimited | 104 | 94 |
+| 14 queues, rate-limited | 183 | 652 |
+| 2 queues | 8 | 48 |
+| 1 queue | 0 | 0 |
+
+Keep the fix (an unguarded FSM advance is wrong regardless), but the root cause is
+still open.
+
+### Two measurement lessons
+
+**Error-IRQ counts are not an error rate.** `ERROR_REARM_DELAY_MS = 2`
+(`onic_lib.c:207`) throttles re-arming, so the count is a floor on burst events,
+modulated by workqueue scheduling. Two runs at the same underlying rate can differ
+several-fold. Do not compare them as rates — the table above is illustrative only.
+
+**Use the QDMA C2H statistics registers** (BAR **0**, not BAR2):
+
+| Offset | Counter |
+|--------|---------|
+| `0xA88` | `C2H_STAT_S_AXIS_C2H_ACCEPTED` — packets accepted from the user stream |
+| `0xA90` | `C2H_STAT_DESC_RSP_PKT_ACCEPTED` |
+| `0xB10` | `C2H_STAT_DESC_RSP_DROP_ACCEPTED` — **drops** |
+| `0xB14` | `C2H_STAT_DESC_RSP_ERR_ACCEPTED` — **errored packets** |
+
+```bash
+sudo onic-bar-read 0000:c2:00.0 0xB10 --bar 0     # drops
+```
+
+### What the counters actually say (stamp 0x07290823, MTU 9000, -P 8)
+
+| Config | Throughput | accepted | DROP | ERR |
+|--------|-----------|----------|------|-----|
+| 14 queues | 58.8 Gbit/s | 8,214,680 | 564 (0.007%) | **0** |
+| 14 queues, rate-limited | 21.5 Gbit/s | 3,022,988 | 3,265 (0.11%) | **0** |
+| 1 queue | 26.1 Gbit/s | 3,678,995 | 30,610 (0.83%) | **0** |
+
+So:
+
+1. **No packets are counted as errored.** The MTY/LEN status bits assert, but
+   `DESC_RSP_ERR_ACCEPTED` stays 0 — the condition costs no packets that QDMA
+   accounts for. It remains a protocol-correctness concern, not a loss source.
+2. **Real loss is descriptor starvation** (`DESC_RSP_DROP_ACCEPTED`), and it scales
+   *inversely* with queue count: 0.83% on one queue, 0.007% on fourteen. That is
+   ordinary capacity exhaustion and points at ring sizing — which cannot currently
+   be tuned at all (`ethtool -g/-G` unimplemented, Ch. 10 §1.4).
+3. **The errors are traffic-triggered, not latched**: zero error IRQs during 12 s
+   idle, both on a running driver and after a fresh reload.
+4. **The throughput ceiling is not explained by loss.** With `ERR=0` and drops at
+   0.007%, the 39-69 Gbit/s spread on one port needs a different explanation.
+
+### Open, in priority order
+
+- Throughput ceiling + run-to-run variance (39-69 Gbit/s single port, ~70 aggregate).
+  Not loss-driven; profile the C2H completion path and the driver's NAPI/refill.
+- Descriptor starvation at low queue counts — needs `ethtool -g/-G` (§1.4) first.
+- MTY/LEN status: audit the qid/length timing in `qdma_subsystem_function.sv`. The
+  leading structural suspicion is that `qid_fifo_dout` only advances on the output
+  `tlast` (`:535`), so a packet's early beats present the *previous* packet's qid;
+  if QDMA samples TUSER qid at the first beat, that is a systematic misassignment
+  invisible with a uniform indirection table. Fix would carry the RSS low bits in
+  the `buf_fifo` TUSER (as v5.2.10 did for the external qid) or pop at SOP and hold
+  for the packet.
