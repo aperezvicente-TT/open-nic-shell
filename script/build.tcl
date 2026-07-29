@@ -15,10 +15,33 @@
 # limitations under the License.
 #
 # *************************************************************************
-proc _do_impl {jobs {strategies ""}} {
+# Apply threading settings to a run.  Two mechanisms are needed because each run
+# executes in its own Vivado process:
+#  - general.maxThreads is a session parameter, so it is injected through a
+#    TCL.PRE hook on the run's first step (all steps of a run share one process).
+#  - -ultrathreads is a command option, passed via "MORE OPTIONS" on the
+#    place/route steps.  It spreads maxThreads across the device's SLRs and is
+#    supported on UltraScale+ SSI parts only (xcu200 = VU9P, 3 SLRs).  Note it
+#    makes placement non-reproducible run to run.
+proc _set_run_threading {run first_step pre_tcl max_threads ultrathreads} {
+    if {$max_threads > 0} {
+        set_property STEPS.${first_step}.TCL.PRE $pre_tcl [get_runs $run]
+    }
+    if {$ultrathreads} {
+        foreach step {PLACE_DESIGN ROUTE_DESIGN} {
+            set_property -name "STEPS.${step}.ARGS.MORE OPTIONS" -value {-ultrathreads} \
+                -objects [get_runs $run]
+        }
+    }
+}
+
+proc _do_impl {jobs {strategies ""} {to_step write_bitstream} {max_threads 0} {ultrathreads 0} {pre_tcl ""}} {
     if {![llength $strategies]} {
-        launch_runs impl_1 -to_step write_bitstream -jobs $jobs
-        wait_on_run impl_1
+        _set_run_threading impl_1 OPT_DESIGN $pre_tcl $max_threads $ultrathreads
+        launch_runs impl_1 -to_step $to_step -jobs $jobs
+        if {[catch {wait_on_run impl_1} e]} {
+            puts "WARNING: \[Impl\] impl_1 reported a failure while waiting: $e"
+        }
     } else {
         set impl_runs "impl_1"
         set_property STRATEGY "[lindex $strategies 0]" [get_runs impl_1]
@@ -28,9 +51,16 @@ proc _do_impl {jobs {strategies ""}} {
             create_run $r -flow {Vivado Implementation 2020} -parent_run synth_1 -strategy "$s"
             lappend impl_runs $r
         }
-        launch_runs $impl_runs -to_step write_bitstream -jobs $jobs
         foreach r $impl_runs {
-            wait_on_run $r
+            _set_run_threading $r OPT_DESIGN $pre_tcl $max_threads $ultrathreads
+        }
+        launch_runs $impl_runs -to_step $to_step -jobs $jobs
+        # wait_on_run raises a Tcl error when a run fails, which would abandon the
+        # remaining strategies and skip the comparison summary.  Collect instead.
+        foreach r $impl_runs {
+            if {[catch {wait_on_run $r} e]} {
+                puts "WARNING: \[Impl\] $r reported a failure while waiting: $e"
+            }
         }
     }
 }
@@ -72,6 +102,24 @@ set src_dir ${root_dir}/src
 #   jobs                   Number of jobs for synthesis and implementation
 #   synth_ip               Synthesize IPs before creating design project
 #   impl                   Run implementation after creating design project
+#   impl_to_step           Last implementation step to run (default write_bitstream).
+#                          Use post_route_phys_opt_design to stop before bitstream
+#                          generation, e.g. when the CMAC IP only has a
+#                          Design_Linking license.
+#   max_threads            Value for "set_param general.maxThreads" inside every
+#                          synthesis/implementation run (1-32 on 2024.2; the Linux
+#                          default is 8).  0 leaves the tool default alone.  Each
+#                          step still applies its own internal cap (8 for place,
+#                          route, phys_opt, DRC and STA) unless ultrathreads is on.
+#   ultrathreads           Pass -ultrathreads to place_design and route_design.
+#                          Spreads max_threads across the SLRs of an UltraScale+
+#                          SSI part, which is the only way past the per-step cap.
+#                          Trades away run-to-run reproducibility of placement.
+#   impl_strategies        Tcl list of implementation strategies.  More than one
+#                          creates impl_2..impl_N off the same synth_1 and runs
+#                          them concurrently (-jobs), so a strategy sweep costs
+#                          little extra wall clock on a many-core host.  Note each
+#                          concurrent run needs its own ~20-30 GB of RAM.
 #   post_impl              Perform post implementation actions
 #   user_plugin            Path to the user plugin repo
 #   bitstream_userid       Bitstream.config userid
@@ -102,6 +150,10 @@ array set build_options {
     -jobs        8
     -synth_ip    1
     -impl        0
+    -impl_to_step write_bitstream
+    -impl_strategies "Vivado Implementation Defaults"
+    -max_threads 0
+    -ultrathreads 0
     -post_impl   0
     -user_plugin ""
     -bitstream_userid  "0xDEADC0DE"
@@ -222,6 +274,17 @@ foreach {param val} [array get design_params] {
 }
 close $fp
 
+# Pre-step hook used to raise the thread limit inside each run's own process
+set threading_pre_tcl ${build_dir}/set_max_threads.tcl
+if {$max_threads > 0} {
+    set fp [open $threading_pre_tcl w]
+    puts $fp "# Generated by build.tcl -- raises the per-run thread limit"
+    puts $fp "set_param general.maxThreads ${max_threads}"
+    puts $fp "puts \"INFO: \\\[Threading\\\] general.maxThreads = \[get_param general.maxThreads\]\""
+    close $fp
+    puts "INFO: \[Threading\] max_threads=${max_threads} ultrathreads=${ultrathreads} (hook: ${threading_pre_tcl})"
+}
+
 # Update the board store
 if {[string equal $board_repo ""]} {
     set_param board.repoPaths "${root_dir}/board_files"    
@@ -239,6 +302,16 @@ foreach name [glob -tails -directory ${src_dir} -type d *] {
 
 # Create/open Manage IP project
 set ip_build_dir ${build_dir}/vivado_ip
+
+# "overwrite" means every IP is rebuilt, so drop the whole IP build directory --
+# Manage IP project included.  Deleting only the per-IP directories leaves their
+# .xci registered in the project and create_ip then fails with "IP name '<ip>' is
+# already in use in this project" (the manual "rm -rf" the build guide calls for).
+if {$overwrite && [file exists $ip_build_dir]} {
+    puts "INFO: \[Manage IP\] overwrite=1: deleting ${ip_build_dir}"
+    file delete -force $ip_build_dir
+}
+
 if {![file exists ${ip_build_dir}/manage_ip/]} {
     puts "INFO: \[Manage IP\] Creating Manage IP project..."
     create_project -force manage_ip ${ip_build_dir}/manage_ip -part $part -ip
@@ -252,6 +325,12 @@ if {![file exists ${ip_build_dir}/manage_ip/]} {
 }
 
 # Run synthesis for each IP
+#
+# The OOC IP synthesis runs are mutually independent, so they are all created
+# first and then launched together with "-jobs $jobs".  Waiting on each run
+# individually inside the loop (the original behaviour) serialized the whole IP
+# stage onto one core regardless of "-jobs".
+set ip_synth_runs {}
 set ip_dict [dict create]
 dict for {module module_dir} $module_dict {
     set ip_tcl_dir ${module_dir}/vivado_ip
@@ -291,6 +370,15 @@ dict for {module module_dir} $module_dict {
         }
         if {$cached} {
             puts "INFO: \[$ip\] Found existing IP build, deleting... (overwrite=1)"
+            # Deleting only the directory leaves the .xci registered in the Manage
+            # IP project, so the create_ip below fails with "IP name '$ip' is
+            # already in use".  Unregister it first.
+            if {![string equal [get_ips -quiet $ip] ""]} {
+                # Work off the IP object, not a path: with the directory already
+                # gone the .xci is still a project record but no longer on disk
+                catch {export_ip_user_files -of_objects [get_ips $ip] -no_script -reset -force -quiet}
+                catch {remove_files -quiet [get_property IP_FILE [get_ips $ip]]}
+            }
             file delete -force ${ip_build_dir}/${ip}
         }
 
@@ -309,11 +397,28 @@ dict for {module module_dir} $module_dict {
         upgrade_ip [get_ips $ip]
         generate_target synthesis [get_ips $ip]
 
-        # Run out-of-context IP synthesis
+        # Create the out-of-context IP synthesis run; launched in parallel below
         if {$synth_ip} {
             create_ip_run [get_ips $ip]
-            launch_runs ${ip}_synth_1
-            wait_on_run ${ip}_synth_1
+            lappend ip_synth_runs ${ip}_synth_1
+        }
+    }
+}
+
+# Launch all pending IP synthesis runs concurrently, then wait for all of them
+if {[llength $ip_synth_runs]} {
+    puts "INFO: \[Manage IP\] Launching [llength $ip_synth_runs] IP synthesis run(s) with -jobs $jobs"
+    launch_runs $ip_synth_runs -jobs $jobs
+    foreach r $ip_synth_runs {
+        wait_on_run $r
+    }
+    foreach r $ip_synth_runs {
+        set st [get_property STATUS [get_runs $r]]
+        set pr [get_property PROGRESS [get_runs $r]]
+        puts "INFO: \[Manage IP\] $r: $st ($pr)"
+        if {![string equal $pr "100%"]} {
+            puts "ERROR: \[Manage IP\] $r did not complete ($st)"
+            exit 1
         }
     }
 }
@@ -446,9 +551,61 @@ if {$sim} {
 # Implement design
 if {$impl} {
     update_compile_order -fileset sources_1
-    _do_impl $jobs {"Vivado Implementation Defaults"}
+
+    # Top-level synthesis runs as part of the implementation launch, so give it the
+    # raised thread limit too (synth_design has its own internal cap)
+    if {$max_threads > 0 && [llength [get_runs -quiet synth_1]]} {
+        set_property STEPS.SYNTH_DESIGN.TCL.PRE $threading_pre_tcl [get_runs synth_1]
+    }
+
+    _do_impl $jobs $impl_strategies $impl_to_step $max_threads $ultrathreads $threading_pre_tcl
+
+    # Summarize every implementation run so a strategy sweep can be compared at a
+    # glance (WNS/TNS/WHS are only populated once the run has been routed)
+    puts "INFO: \[Impl\] ==== implementation run summary ===="
+    foreach r [lsort [get_runs impl_*]] {
+        puts [format "INFO: \[Impl\] %-8s %-42s %-12s %-6s WNS=%s TNS=%s WHS=%s" \
+            $r \
+            [get_property STRATEGY [get_runs $r]] \
+            [get_property PROGRESS [get_runs $r]] \
+            [get_property STATUS   [get_runs $r]] \
+            [get_property STATS.WNS [get_runs $r]] \
+            [get_property STATS.TNS [get_runs $r]] \
+            [get_property STATS.WHS [get_runs $r]]]
+    }
 }
 
 if {$post_impl} {
-    _do_post_impl $top_build_dir $top impl_1 $zynq_family ${board}
+    # Pick the run to turn into a flash image.  With a strategy sweep, impl_1 is
+    # just the first strategy, not necessarily the one that closed timing -- so
+    # prefer the run with the best WNS among those that produced a bitstream.
+    set best_run ""
+    set best_wns ""
+    foreach r [lsort [get_runs -quiet impl_*]] {
+        if {![file exists ${top_build_dir}/${top}.runs/${r}/${top}.bit]} {
+            continue
+        }
+        set w [get_property STATS.WNS [get_runs $r]]
+        if {[string equal $w ""]} {
+            continue
+        }
+        if {[string equal $best_wns ""] || $w > $best_wns} {
+            set best_wns $w
+            set best_run $r
+        }
+    }
+
+    if {$zynq_family} {
+        _do_post_impl $top_build_dir $top impl_1 $zynq_family ${board}
+    } elseif {![string equal $best_run ""]} {
+        puts "INFO: \[Post-impl\] Using $best_run for write_cfgmem (WNS=$best_wns)"
+        if {$best_wns < 0} {
+            puts "CRITICAL WARNING: \[Post-impl\] $best_run has negative WNS ($best_wns);\
+                  the resulting .mcs is functional but not timing-clean"
+        }
+        _do_post_impl $top_build_dir $top $best_run $zynq_family ${board}
+    } else {
+        puts "WARNING: \[Post-impl\] no implementation run produced a bitstream;\
+              skipping write_cfgmem"
+    }
 }

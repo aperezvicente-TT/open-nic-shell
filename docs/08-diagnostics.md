@@ -147,8 +147,11 @@ is possible in the design but unnecessary against a Gen3 ×4 peer.
 
 These are known, deliberately-deferred loose ends (not defects in the running system):
 
-1. **Timing closure is not reproducible from source** — the clean image was a manual
-   `phys_opt` on the routed DCP; bake it into `build.tcl` for production (Ch. 6 §6.6).
+1. ~~**Timing closure is not reproducible from source**~~ — **resolved 2026-07-29.**
+   `-impl_strategies 'Performance_ExplorePostRoutePhysOpt'` closes clean (WNS +0.008 ns,
+   TNS 0.000, 0 failing endpoints) with `-ultrathreads 0`, i.e. deterministically, and
+   `-post_impl` now writes the `.mcs` from the best-WNS run. Defaults still lands at
+   −0.095 ns / 82 endpoints, matching the original observation (Ch. 6 §6.6).
 2. **Dead `port_id` RTL** in `qdma_subsystem_function.sv` (`h2c_qid_corrected`,
    `s_axis_h2c_tuser_port_id`) can be removed (Ch. 3 §3.6).
 3. **Driver still links OFED** because the RDMA `.c` files still compile; dropping them

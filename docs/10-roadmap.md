@@ -42,7 +42,7 @@ and "behaves like a NIC."
 | 2.2 | **TSO** (`NETIF_F_TSO`) | **FPGA** (HW segmentation) | L | GSO in software is free-ish (`NETIF_F_GSO`), but true TSO needs a segmentation engine. |
 | 2.3 | **GRO / LRO** | Driver (GRO) / FPGA (LRO) | S (GRO) | GRO is driver-side and cheap; enable in `onic_rx_poll`. |
 | 2.4 | **Interrupt moderation / adaptive coalescing**, **XPS**, **aRFS** | Driver | M | Reduces IRQ rate; pairs with 1.4. |
-| 2.5 | **Reproducible timing closure** | Build flow | M | Today's clean image is a manual post-route `phys_opt` (Ch. 6 §6.6); bake the `phys_opt`/Performance strategy into `build.tcl`'s `_do_impl` before calling the gateware production-ready. |
+| 2.5 | ~~**Reproducible timing closure**~~ ✅ | Build flow | ~~M~~ done | **Resolved 2026-07-29.** `_do_impl` now takes `-impl_strategies` (a list → concurrent `impl_1..N` off one synthesis) plus `-max_threads`/`-ultrathreads`. `Performance_ExplorePostRoutePhysOpt` closes clean deterministically at WNS +0.008 ns; `-post_impl` picks the best-WNS run for `write_cfgmem`. See Ch. 6 §6.6 for the strategy sweep data. |
 
 ## 10.4 Tier 3 — Robustness / production hardening
 
@@ -86,6 +86,9 @@ The three highest-leverage next steps, in order:
 Quick wins to bank alongside them (all **S**, driver-only): scatter-gather (§1.3),
 ring/coalesce ethtool ops (§1.4), pause frames (§1.5), GRO (§2.3), and dropping the OFED
 dependency (§3.4).
+
+**Done since this chapter was written:** §2.1 per-port RSS (Ch. 11, hardware-verified
+2026-07-03) and §2.5 reproducible timing closure (Ch. 6 §6.6, 2026-07-29).
 
 Everything here is incremental on top of a datapath that already moves packets losslessly
 at the peer's line rate — none of it is a prerequisite for the NIC to *function*, only to

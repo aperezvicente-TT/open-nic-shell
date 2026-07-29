@@ -11,3 +11,6 @@ vivado*.str
 
 # Ignore build directory
 build
+
+# Ignore build wrapper logs
+build_*_full.log
