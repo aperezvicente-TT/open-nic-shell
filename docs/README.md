@@ -42,6 +42,8 @@ If you are… | Start with
 | 8 | [Diagnostics & Troubleshooting](08-diagnostics.md) | Reading the diag counters, CMAC stats, known-good failure playbooks, BW/retransmit analysis |
 | 9 | [Reference: Registers, Offsets & Bit-fields](09-reference.md) | Consolidated BAR map, CMAC strides, diag CSR offsets, qid/TUSER bit-field tables |
 | 10 | [Roadmap: From Working Link to Full NIC](10-roadmap.md) | Gap analysis by tier (table-stakes → SmartNIC), FPGA-vs-driver split, effort estimates |
+| 11 | [Per-Port RSS Coexisting with qid-Steering](11-rss-implementation-plan.md) | `RSS_ON_EXT` combine mode — design, hardware verification, and the open C2H `MTY`/`LEN` investigation |
+| 12 | [Adaptive Interrupt Moderation (DIM)](12-dim-implementation-plan.md) | Plan for replacing static C2H coalescing with the kernel DIM library — **plan only** |
 
 ---
 
