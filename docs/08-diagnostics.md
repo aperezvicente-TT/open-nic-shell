@@ -143,6 +143,57 @@ Observed: ~**20–22 Gbps per port** and some **TCP retransmits** under load. Th
 side, not any FPGA change. Per-CMAC RSS (multiple queues per port for line-rate scaling)
 is possible in the design but unnecessary against a Gen3 ×4 peer.
 
+## 8.8 Throughput on a 100G peer — supersedes §8.6
+
+§8.6 concluded the ~20-22 Gbit/s ceiling was the *peers'* Gen3 x4 slots. Testing on
+`homelab-1` (2026-07-29) against a **100G ConnectX-7** (`desktop-0`, both ports at
+`speed=100000`), with the FPGA at Gen3 x16 (`LnkSta: Speed 8GT/s, Width x16`),
+shows that was wrong: the peer's `rx_dropped`/`rx_missed_errors` stay at **0**
+throughout and we exceed 20 Gbit/s routinely.
+
+Measured, MTU 9000 both ends, iperf3 `-P 8`, servers pinned to the card's NUMA node:
+
+| Test | Result |
+|------|--------|
+| RX, one port | 63-69 Gbit/s |
+| RX, both ports | ~70 Gbit/s aggregate (35 + 35, reproducible) |
+| TX, one port | up to 88 Gbit/s, **0** retransmits |
+| Latency, concurrent ping on 4 paths | 0% loss, 0.097-0.118 ms avg |
+
+Three measurement traps, all of which produced wrong numbers before being found:
+
+1. **NUMA.** The card is on node 1. Unpinned, the same test ranged **23.5-88.4
+   Gbit/s**; pinned with `taskset -c 64-127,192-255` it holds within ~15%. Queue
+   IRQs are already on node 1 (e.g. vector 578 -> CPU 91) — it is the userspace
+   threads that need pinning.
+2. **CMAC `ethtool -S` counters clear on read.** Deltas across two reads go
+   *negative*. Use the plugin counters at BAR2 `0x100000+` for loss accounting;
+   their in/out pairs match exactly.
+3. **MTU.** 1500 caps RX at ~7.7 Gbit/s and does not scale with streams; 9000 is
+   required for any meaningful number.
+
+RX throughput does **not** scale with queue count (68.1 / 58.6 / 61.7 Gbit/s at
+`-P 8` / `16` / `32`, spreading over 6 / 8 / 12 queues) and no CPU is saturated
+(busiest softirq 85% of one core at 6 queues, 55% at 12), so the RX ceiling is in
+the DMA path, not host CPU. **These numbers are contaminated by the C2H qid defect
+in Ch. 11 §11.13** — re-measure after that fix before treating any of them as the
+datapath's real limit.
+
+### Diagnosing QDMA C2H errors
+
+`onic-error` interrupts print a bare vector; the decode is already in the driver
+(`onic_qdma_dump_error_regs`, dumped before the W1C clear):
+
+```bash
+sudo dmesg | grep 'QDMA err'
+# QDMA err: GLBL=0x00000100 ... C2H=0x00000003 C2H_FATAL=0x00000003 ... C2H_FIRST_ERR_QID=0x00000007
+```
+
+`C2H=0x3` is `MTY_MISMATCH | LEN_MISMATCH` — a C2H stream protocol violation, i.e.
+an RTL bug in the shell, not a tuning problem (Ch. 11 §11.13). Read shell registers
+with `tools/bar_read.py` in the driver repo (`onic-bar-read` once installed); the
+`ernic-baremetal` tool §8.2 references is not part of these repos.
+
 ## 8.7 Open / non-blocking items
 
 These are known, deliberately-deferred loose ends (not defects in the running system):

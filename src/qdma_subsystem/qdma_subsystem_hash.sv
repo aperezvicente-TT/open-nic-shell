@@ -162,7 +162,22 @@ module qdma_subsystem_hash (
       end
 
       S_S1_MORE: begin
-        // Second beat
+        // Second beat.
+        //
+        // The payload-valid pulse and the state advance MUST stay inside the
+        // tvalid/tready handshake.  They used to sit outside it, so any stall or
+        // idle cycle while in this state emitted a spurious eth_payload_valid --
+        // and sampled p_axis_tlast with no beat actually transferred.  Because
+        // hash_result_valid is derived from it (:458) and drives the qid_fifo
+        // push in qdma_subsystem_function.sv while the pop is driven by the
+        // output tlast, the push count diverged from the packet count and every
+        // subsequent packet inherited a neighbour's qid.
+        //
+        // Symptom on hardware: QDMA C2H LEN_MISMATCH + MTY_MISMATCH (both fatal
+        // class), ~100-180 error IRQs per 10 s run with 14 RSS queues, 8 with 2
+        // queues, 0 with 1 queue (a uniform indirection table hides the
+        // misassignment).  Error count rose as the offered rate FELL, which is
+        // the signature of idle cycles in this state rather than a rate race.
         if (p_axis_tvalid && p_axis_tready) begin
           if (~eth_is_8021q) begin
             // Saved 50 bytes, need at most 14 bytes (60 bytes IP header plus 4
@@ -174,11 +189,11 @@ module qdma_subsystem_hash (
             // bytes TCP/UDP ports)
             next_eth_payload[(46*8) +: (18*8)] = p_axis_tdata[0 +: (18*8)];
           end
-        end
 
-        next_vid_shift_reg[1]  = vid_shift_reg[0];
-        next_eth_payload_valid = 1'b1;
-        next_s1_state          = (p_axis_tlast) ? S_S1_IDLE : S_S1_PASS;
+          next_vid_shift_reg[1]  = vid_shift_reg[0];
+          next_eth_payload_valid = 1'b1;
+          next_s1_state          = (p_axis_tlast) ? S_S1_IDLE : S_S1_PASS;
+        end
       end
 
       S_S1_PASS: begin

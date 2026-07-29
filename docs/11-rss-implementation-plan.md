@@ -244,3 +244,67 @@ table is live and controllable at runtime via `ethtool -X`.
 **Caveat unchanged:** aggregate RX throughput is still bounded by the remote peers'
 Gen3 ×4 PCIe slot (~22 Gbps), so RSS's benefit here is *distribution across cores*, not a
 higher aggregate number on this particular bench (Ch. 8 §8.6).
+
+## 11.13 Root cause: C2H LEN/MTY mismatch under multi-queue RSS (2026-07-29)
+
+> **Status: RTL fix committed, UNBUILT and unverified on hardware.** Requires a
+> rebuild (§6.2) and a re-run of the measurements below.
+
+Hardware traffic testing against a 100G ConnectX-7 peer (see Ch. 8 §8.8) showed
+QDMA raising **fatal** C2H errors whenever RSS spread traffic over more than one
+queue:
+
+```
+C2H_ERR_STAT = C2H_FATAL_ERR_STAT = 0x3
+  bit 0  MTY_MISMATCH   last-beat empty-byte count inconsistent with tlast
+  bit 1  LEN_MISMATCH   completion length != bytes actually transferred
+C2H_FIRST_ERR_QID = 7
+```
+
+### Evidence
+
+| Config | Throughput | Error IRQs / 10 s |
+|--------|-----------|-------------------|
+| 14 queues, unlimited | 45.9 Gbit/s | 104 |
+| 14 queues, rate-limited | 21.4 Gbit/s | **183** |
+| 2 queues, unlimited | 48.8 Gbit/s | 8 |
+| 1 queue, unlimited | 27.3 Gbit/s | **0** |
+| 1 queue, rate-limited | 23.5 Gbit/s | **0** |
+
+Two properties pin the mechanism down: the error count tracks the **number of
+distinct qids in flight**, not the rate; and it *rises as the rate falls*, which
+excludes a high-rate race and points at idle/stall cycles.
+
+### Cause
+
+`qdma_subsystem_hash.sv` state `S_S1_MORE` asserted `eth_payload_valid` and
+advanced the FSM **outside** the `p_axis_tvalid && p_axis_tready` handshake, also
+sampling `p_axis_tlast` with no beat transferred. `hash_result_valid` derives from
+it (`:458`), and in RSS/combine mode that signal pushes `qid_fifo` while the pop is
+driven by the *output* `tlast` (`qdma_subsystem_function.sv:535`). Any spurious
+pulse desynchronises push from pop, after which every packet carries a
+neighbour's qid — so the completion length lands on the wrong queue.
+
+A uniform indirection table (`ethtool -X ... equal 1`) hides it completely, which
+is why Ch. 11's original bring-up (ping + per-queue IRQ spread) passed: the qid is
+*wrong* but still inside the correct CMAC's block, so steering isolation and
+trip-wires stay clean.
+
+**This defect is pre-existing and also affects the legacy `EXT_QID=0` RSS path.**
+`RSS_ON_EXT=1` merely re-exposed it, by returning `qid_fifo` to the `EXT_QID=1`
+datapath that v5.2.10 had deliberately moved off it (`:484-490` calls the same
+symptom "first-beat-vs-tlast pipelining asymmetry ... ~14% misroute").
+
+### Fix
+
+Move the payload-valid pulse and the state advance inside the handshake, so
+`hash_result_valid` fires exactly once per packet. The module synthesises clean
+out-of-context (3347 cells).
+
+### Still open
+
+- Rebuild + re-measure: does the error count go to zero at 14 queues, and how much
+  of the RX throughput ceiling (Ch. 8 §8.8) was these drops?
+- Consider carrying the RSS low bits in the `buf_fifo` TUSER alongside the data,
+  as v5.2.10 did for the external qid, so correctness no longer depends on two
+  independent pipelines staying aligned.
