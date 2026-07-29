@@ -4,9 +4,11 @@ A plan to close the burst-robustness gap measured in Ch. 8 §8.8.2, where this
 datapath drops 1.2-3.6 % of unpaced UDP that a ConnectX-7 on the same bench absorbs
 losslessly. The root cause is identified and it is not a tuning parameter.
 
-> **Status: PLAN. Root cause established by measurement + code inspection; no
-> implementation yet.** Step 0 is cheap, independently useful, and required to
-> validate anything else.
+> **Status: Step 0 DONE (driver `2024258`). Steps 3/4b/5 attempted and BLOCKED on
+> the measurement instrument — see §13.10.** The root cause in §13.1 stands on the
+> CX-7 comparison and code inspection, but the tuning experiments cannot be
+> evaluated with iperf3 UDP: drop rate spans 0.0000-6.16 % at identical settings.
+> A precise packet generator is now the first prerequisite, not the last step.
 
 ## 13.1 Root cause
 
@@ -52,7 +54,7 @@ So the gap is not "the CX-7 has deeper buffers" — it is "the CX-7 can say stop
 | C2H `MTY`/`LEN` protocol errors | Unrelated — `DESC_RSP_ERR_ACCEPTED` is 0 in every measurement (Ch. 11 §11.14) |
 | Peer or wire faults | Ruled out — peer `rx_dropped` 0, CMAC FCS/error 0 |
 
-## 13.2 Step 0 — make the drops visible (S, do first)
+## 13.2 Step 0 — make the drops visible ✅ DONE (driver `2024258`)
 
 Today `rx_dropped` reads 0 while packets are discarded; the only evidence is
 `DESC_RSP_DROP` in BAR0 `0xB10`. A ConnectX-7 reports the identical class of drop in
@@ -66,6 +68,20 @@ Today `rx_dropped` reads 0 while packets are discarded; the only evidence is
   from the CMAC and are the primary signal that Step 2 works.
 
 This is Ch. 10 §1.6, is required to validate every later step, and needs no RTL.
+
+**Implemented and verified.** `ethtool -S` now reports `plugin_rx_adap_in` (per-CMAC),
+both trip-wires, and `qdma_c2h_{accepted,desc_rsp_drop,desc_rsp_err}`; `get_stats64`
+fills per-port `rx_dropped`/`rx_missed_errors` from the plugin counter, since the QDMA
+register is device-global. Agreement to within one packet under 40 G unpaced UDP:
+
+```
+ip -s link:  packets 6,607,833   dropped 133,629   missed 133,629
+ethtool -S:  accepted 6,741,463  desc_rsp_drop 133,630   (6,607,833 + 133,630 = ✓)
+```
+
+Two traps handled: the plugin counter is cumulative since bitstream load while netdev
+counters reset per driver load (baseline seeded at open), and it is 32-bit (deltas
+accumulated with natural wrap).
 
 ## 13.3 What is already configured (checked against live hardware)
 
@@ -213,3 +229,60 @@ Do 0, 3, 4b and 5 first: all are days, need no RTL, and either narrow or elimina
 the alternatives before committing to a gateware cycle. Step 2 is the real fix and
 the only one that makes sustained overload lossless, but it costs a rebuild + reflash
 (~78 min build, ~15 min flash) and should be entered with the model confirmed.
+
+## 13.10 BLOCKER — the drop metric is not reproducible with iperf3 UDP
+
+Steps 3 (§13.5), 4b (§13.6) and 5 (§13.7) were attempted. They cannot be evaluated,
+because the measurement varies more between identical runs than between the
+configurations under test.
+
+Same command, same settings, 40 G offered unpaced UDP, MTU 9000, 14 queues,
+NUMA-pinned server, measured with the new per-port counters:
+
+| Config | drop % across runs |
+|--------|--------------------|
+| defaults | 1.2137, 0.0193, 0.0000, 3.8501 |
+| rings 16385 + step 4096 | 2.1112, 0.1798, 0.0000, 0.0006 |
+| step 4096 only | 0.5781, 1.6653, 0.3645, 0.0223 |
+| rings 16385 only | 2.4187, 0.1817, 0.0024, 0.1416 |
+| defaults (8 more runs) | 0.1427, 1.5412, 0.0004, 0.1108, 6.1557, 0.0028, 0.0000, 0.1335 |
+| big-buffers (8 more runs) | 5.3001, 0.0114, 2.9634, 0.0147, 0.0097, 2.3969, 2.9950, 0.0058 |
+
+**0.0000 % to 6.16 % at identical settings.** Stratifying by achieved offered rate
+(which is bimodal, ~380k or ~545k pps) did not rescue it: one stratified batch showed
+big buffers 16x *better* with no overlap, the next showed them worse. Four successive
+promising results failed to replicate.
+
+The premise was wrong: **iperf3 UDP is not a constant-rate source.** Delivered counts
+varied 4.4-6.7 M for the same nominal offer, and the residual variance after
+rate-stratification means something else (sender CPU scheduling, per-run burst shape,
+receiver core placement) also moves per run.
+
+### What this changes about the plan
+
+- **No conclusion about buffering.** §13.5 is neither confirmed nor refuted; earlier
+  wording in this chapter claiming ring depth was "ruled out" over-stated what a
+  2-sample comparison can support. The only buffering statement that survives is
+  structural: the posted window is [step/2, 1.5·step] regardless of ring size.
+- **§13.7 moves to the front.** You cannot tune what you cannot measure. The
+  instrument is now step 1, and the plan order in §13.9 is superseded by §13.11.
+- **The §13.1 root cause is unaffected** — it rests on the CX-7 comparison (a 20x-plus
+  gap, repeatedly reproduced, including three CX-7 repeats at 0/0.0753/0 %) and on
+  code inspection showing `ctl_tx_pause_req` tied to zero. Not on these sweeps.
+
+## 13.11 Revised order — instrument first
+
+1. **Precise generator (S-M).** `pktgen` is available on both hosts (module present,
+   not loaded) and emits an exact, constant pps from kernel context, removing the
+   sender-side variance. Pin the receiver's iperf3/NAPI cores too. Acceptance test:
+   the same configuration measured five times must agree within a factor of two
+   before any tuning result is believed.
+2. **Then re-run §13.5 / §13.6** (buffering, prefetch queue count) against that
+   generator, medians of ≥5.
+3. **Then the burst-depth question** — with a constant-rate source, sweep burst size
+   at fixed average rate, which is the measurement that actually distinguishes
+   "absorbs deeper bursts" from "drops earlier".
+4. **§13.4 (pause generation) is independent of all of the above** and can proceed in
+   parallel: its acceptance criterion is `stat_tx_pause` becoming non-zero and the
+   CX-7-relative drop gap closing, both of which are large effects rather than the
+   fractions-of-a-percent this instrument cannot resolve.
