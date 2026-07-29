@@ -6,8 +6,10 @@ traffic instead of requiring an operator to choose. Read Ch. 8 §8.8 for the
 measurements that motivate it and the driver commits `f33fed9` / `48d6b68` for what
 already exists.
 
-> **Status: PLAN ONLY — nothing implemented.** Step 1 is a blocking investigation
-> whose outcome decides the design; do not start Step 3 before it resolves.
+> **Status: Step 1 done (2026-07-29) and it changed the conclusion — DIM is NOT
+> recommended for throughput on this hardware.** See §12.4 for the ruled-out
+> mechanism and §12.4.1 for the latency measurement that removes the motivation.
+> Steps 2-5 are retained as the design to use if DIM is ever revisited.
 
 ## 12.1 Why
 
@@ -21,12 +23,16 @@ and the shipped default was pathological — an interrupt every 2 completions:
 | 128 / 5 | 98.2 Gbit/s |
 | back to 2 / 0 | 37.1 Gbit/s |
 
-But no static value is correct for every workload. High thresholds add latency and
-raise the drop count under bursty load (11k-30k `DESC_RSP_DROP` per 10 s run at
-`cnt_th` 64-192, versus ~1 at the default); low thresholds cost 3x throughput. The
-ConnectX-7s in this bench sidestep the choice: `rx-frames 128 / rx-usecs 8` **with
-`Adaptive RX: on`**. That is what DIM provides, and it is why `mlx5` and `bnxt_en`
-use it rather than shipping a constant.
+The original argument for DIM was that no static value suits every workload: high
+thresholds trade latency for throughput, low thresholds cost 3x throughput, and the
+ConnectX-7s in this bench sidestep the choice with `rx-frames 128 / rx-usecs 8` and
+`Adaptive RX: on`.
+
+**That argument turned out not to hold here** — §12.4.1 shows average latency is flat
+across a 96x range of thresholds, because the timer bounds the wait and the timer
+pool caps at 20 µs. What high thresholds *do* cost is a higher `DESC_RSP_DROP` rate
+under saturating load (0.06-0.33% versus ~0), which is a separate problem needing
+its own characterisation (Ch. 8 §8.8) and is not something DIM would fix.
 
 ## 12.2 What already exists
 

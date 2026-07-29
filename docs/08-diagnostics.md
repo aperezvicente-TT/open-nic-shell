@@ -24,11 +24,17 @@ bring-up, and the analysis of the throughput/retransmit behaviour.
 Read the build-stamp register (system-config `BUILD_STATUS`, BAR2 `0x0`):
 
 ```bash
-tools/ernic-baremetal/ernic-baremetal bar-poke 0000:01:00.0 0x0
+sudo onic-bar-read <bdf> 0x0          # or: driver repo tools/bar_read.py
 ```
 
-The validated **clamp-fix** image reads **`0x07010922`**. If you read a different value,
-you are not running the fixed bitstream — reflash (Ch. 6 §6.8) and reboot.
+The stamp is `-build_timestamp` from the build (MMDDHHMM), so it identifies the image
+exactly. Known values: **`0x07290823`** — current, hash-handshake fix + RSS
+(Ch. 11 §11.13); `0x07290109` — same RTL without that fix; `0x07010922` — the
+original clamp-fix image. A value you do not recognise means you are not running what
+you think — reflash (Ch. 6 §6.8).
+
+> `tools/ernic-baremetal` appears in older revisions of this chapter; it is not part
+> of these repos. Use `bar_read.py` / `onic-bar-read` from the driver repo.
 
 ## 8.3 The plugin diagnostic counters (the primary instrument)
 
@@ -152,8 +158,9 @@ shows that was wrong: the peer's `rx_dropped`/`rx_missed_errors` stay at **0**
 throughout and we exceed 20 Gbit/s routinely.
 
 Measured, MTU 9000 both ends, iperf3 `-P 8`, servers pinned to the card's NUMA node,
-**with C2H completion coalescing enabled** (`onic` module parameters
-`cmpl_cnt_idx=7 cmpl_tmr_idx=8` → cnt_th 64 packets / tmr_cnt 25):
+**with C2H completion coalescing at the shipped default** (`cmpl_cnt_idx=7`,
+`cmpl_tmr_idx=9` → 64 entries / 3.0 µs since driver `9162fe6`; override with
+`ethtool -C`):
 
 | Test | Result |
 |------|--------|
