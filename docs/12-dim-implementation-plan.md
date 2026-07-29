@@ -53,11 +53,73 @@ re-init 98.5 Gbit/s.
 not an option** — it would flap the link continuously. So DIM cannot ship until
 there is a way to apply a new threshold to a live queue.
 
-## 12.4 Step 1 — resolve the apply mechanism (BLOCKING, S-M)
+## 12.4 Step 1 — RESOLVED: mechanism (a) is ruled out (2026-07-29)
 
-Three candidates, in order of preference:
+> **Result: the CIDX-carried fields do NOT apply in place. DIM is deprioritised —
+> see §12.4.1 for why its value on this hardware is much lower than assumed.**
 
-**(a) The CMPT CIDX-carried fields.** `QDMA_OFFSET_DMAP_SEL_CMPL_CIDX` already
+Measured with `coalesce_bounce=0` (a driver knob added for this purpose, which
+skips the queue re-init so only the CIDX path is exercised), at a **constant
+20 Gbit/s offered load**, watching per-queue IRQ rate rather than throughput:
+
+| Setting | irq/s | pkt/irq |
+|---------|-------|---------|
+| baseline 2f/0us | 48,444 | 6.0 |
+| `-C 64f/3us` in place | 56,127 | 5.2 |
+| still 64f/3us | 51,756 | 5.6 |
+| back to 2f/0us | 47,919 | 6.1 |
+
+Flat, and if anything in the wrong direction. Repeated with the QDMA
+completion-context **full-update** bit set (`cmpl_full_upd=1`), which is the field
+that gates whether a CIDX write applies its trigger fields to the context:
+
+| Setting (full_upd=1) | irq/s | pkt/irq |
+|----------------------|-------|---------|
+| baseline 2f/0us | 76,583 | 3.8 |
+| `-C 64f/3us` in place | 76,488 | 3.8 |
+| `-C 192f/20us` in place | 68,125 | 4.3 |
+| back to 2f/0us | 80,360 | 3.6 |
+
+Also flat. For contrast, the same values applied **through a queue re-init** move
+`pkt/irq` from ~5 to ~64 and throughput from 34 to 98 Gbit/s. The register write
+itself is well-formed (layout verified against PG302: CIDX `[15:0]`, counter_idx
+`[19:16]`, timer_idx `[23:20]`, trig_mode `[26:24]`, stat_en `[27]`, irq_arm
+`[28]`), so this is a hardware behaviour, not a driver bug. `cmpl_full_upd`
+defaults to **false** since setting it buys nothing.
+
+That leaves only (b) in-place context rewrite and (c) software-side re-arm
+moderation, both described below.
+
+### 12.4.1 Why DIM is now optional rather than necessary
+
+The case for DIM rests on there being a real throughput-versus-latency tradeoff.
+On this hardware there is almost none — average RTT is flat across a 96x range of
+frame thresholds:
+
+| Coalescing | RTT min/avg/max (ms) | mdev |
+|------------|----------------------|------|
+| 2f/0us | 0.066 / **0.099** / 0.473 | 0.018 |
+| 64f/3us | 0.036 / **0.100** / 0.904 | 0.033 |
+| 192f/20us | 0.077 / **0.102** / 0.938 | 0.042 |
+
+The *timer* threshold bounds how long a lone packet waits, and the timer pool caps
+at 20 µs — far below where latency becomes visible on a ~100 µs RTT. Only the tail
+widens. So a **static default captures nearly all of the available benefit**:
+64 frames / 3 µs is now the shipped default (driver `9162fe6`), giving 96-98 Gbit/s
+with average latency unchanged, and `ethtool -C` covers any workload that wants
+something else.
+
+**Recommendation: do not build DIM for throughput.** Revisit only if a workload
+appears that needs microsecond-class tail latency *and* line rate, or if the timer
+range is extended (raising `C2H_INT_TIMER_TICK` trades resolution for range) such
+that a real tradeoff appears. The remaining sections are kept as the design that
+would be used if that happens.
+
+## 12.5 Remaining candidate mechanisms (if DIM is revisited)
+
+Two candidates remain; (a) is ruled out above.
+
+**(a) ~~The CMPT CIDX-carried fields~~ — RULED OUT.** Retained for the record: `QDMA_OFFSET_DMAP_SEL_CMPL_CIDX` already
 carries `counter_idx`, `timer_idx`, `trig_mode` on every update, and
 `onic_set_completion_tail()` writes it on every NAPI completion. PG302 describes
 these as updating the queue's configuration, which would make live application

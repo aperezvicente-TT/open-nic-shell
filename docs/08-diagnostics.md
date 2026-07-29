@@ -185,9 +185,18 @@ MTU 1500 measures **31-34 Gbit/s at 2.7-2.9 Mpps** (an earlier claim here of
 "~7.7 Gbit/s" was wrong — it came from unpinned runs on the pre-fix bitstream).
 Nor was the ceiling ever in the DMA engine: raising the descriptor and completion
 rings 8x (`rngcnt_pool[0]`=2049 → `[15]`=16385) changed single-queue drops by less
-than 1% (30,610 → 31,609), so ring depth is not the lever either — those drops are
-one queue's drain rate, which RSS spreading already mitigates (0.83% on 1 queue →
-0.007% on 14).
+than 1% (30,610 → 31,609), so ring depth is not the lever for *those* drops — they
+are one queue's drain rate, which RSS spreading already mitigates (0.83% on 1 queue
+→ 0.007% on 14).
+
+⚠️ Coalescing introduces a **separate** drop population: at 64 frames / 3 µs under
+saturating load, `DESC_RSP_DROP` runs 0.06-0.33% where the old default gave ~0.
+Deeper rings initially looked like a fix (560 vs 36,510 drops) but **did not
+replicate** — repeats at 1537/3073/4097 entries gave 0.0003-0.091% with ~20x swings
+between identical runs, and 1537 (smaller than the 2049 default) scored best once.
+Ring depth does not reliably control them; they need a controlled characterisation
+(fixed rate, longer runs, per-queue attribution) before anything is concluded.
+`desc_rngcnt_idx` / `cmpl_rngcnt_idx` are exposed for that work.
 
 ### Diagnosing QDMA C2H errors
 
