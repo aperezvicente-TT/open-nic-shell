@@ -1,0 +1,180 @@
+# Chapter 13 — Implementation Plan: Link-Level Flow Control (the C2H drop root cause)
+
+A plan to close the burst-robustness gap measured in Ch. 8 §8.8.2, where this
+datapath drops 1.2-3.6 % of unpaced UDP that a ConnectX-7 on the same bench absorbs
+losslessly. The root cause is identified and it is not a tuning parameter.
+
+> **Status: PLAN. Root cause established by measurement + code inspection; no
+> implementation yet.** Step 0 is cheap, independently useful, and required to
+> validate anything else.
+
+## 13.1 Root cause
+
+**This design has no link-level flow control, so its only response to receive
+overload is to discard.**
+
+Evidence, in the order it was established:
+
+| Observation | Source |
+|-------------|--------|
+| Unpaced UDP at 40 G offered → **1.2-1.9 %** drops, every run | Ch. 8 §8.8.1 |
+| ConnectX-7, same host/peer/MTU/binary → **0.0000 / 0.0753 / 0.0000 %** | Ch. 8 §8.8.2 |
+| CX-7↔CX-7 reference link has **pause RX on, TX on** at both ends | `ethtool -a` |
+| The FPGA's own peer port (`enp130s0f0np0`) also has **pause RX/TX on** — it *would* honour pause frames | `ethtool -a` |
+| The FPGA link has **never sent or received one**: `stat_tx_pause = 0`, `stat_rx_pause = 0` | `ethtool -S enp194s0` |
+| `ethtool -a` on our netdev → `Operation not supported` | driver has no `get/set_pauseparam` |
+| `ctl_tx_pause_req[8:0]` **exists** in the CMAC wrapper but is never driven | `cmac_subsystem_cmac_wrapper.sv:94` |
+| Every RX-path FIFO fill output is left unconnected — `.almost_full()`, `.prog_full()` | `eth_2cmac_1pf_250mhz.sv:394-395`, `packet_adapter_rx.sv:273-279` |
+
+### Why this also explains the TCP/UDP asymmetry
+
+Ch. 8 §8.8.1 left one thing unexplained: TCP sustains ~1.37 Mpps at ≤0.33 % drops,
+**2.4x the packet rate** at which UDP drops 1.2 %. No average-rate or buffer-size
+argument covers that. Flow control does:
+
+- **TCP carries its own end-to-end backpressure.** Loss shrinks the window, so the
+  sender paces itself to just under the receiver's capability. It rarely presents an
+  unpaced burst.
+- **UDP has none.** iperf3 emits bursts at line rate inside each pacing interval, so
+  the instantaneous arrival rate greatly exceeds the drain rate.
+- A NIC with pause converts that into *backpressure on the sender*. A NIC without it
+  has only one option left: drop.
+
+So the gap is not "the CX-7 has deeper buffers" — it is "the CX-7 can say stop".
+
+### What is NOT the cause (ruled out by measurement)
+
+| Hypothesis | Verdict |
+|------------|---------|
+| Descriptor ring depth | Ruled out — 8x (2049→16385) changed nothing at comparable delivered rates (§8.8.1) |
+| Posted-descriptor window | Not supported — 256→1024 within variance; **note the large-ring + large-window combination was never tested**, see §13.5 |
+| Completion coalescing | Not the cause of drops; it *raised capacity* 2.7x and thereby moved the operating point to where drops appear |
+| C2H `MTY`/`LEN` protocol errors | Unrelated — `DESC_RSP_ERR_ACCEPTED` is 0 in every measurement (Ch. 11 §11.14) |
+| Peer or wire faults | Ruled out — peer `rx_dropped` 0, CMAC FCS/error 0 |
+
+## 13.2 Step 0 — make the drops visible (S, do first)
+
+Today `rx_dropped` reads 0 while packets are discarded; the only evidence is
+`DESC_RSP_DROP` in BAR0 `0xB10`. A ConnectX-7 reports the identical class of drop in
+`rx_dropped` (measured: 919 hardware drops, 919 in `rx_dropped`).
+
+- read the QDMA C2H stats (`0xA88` accepted, `0xB10` drop, `0xB14` err) and add them
+  to `ethtool -S`;
+- fold the drop counter into `get_stats64`'s `rx_dropped` (and `rx_missed_errors`,
+  which is the more precise kernel semantic for "ran out of buffer");
+- add `stat_rx_pause` / `stat_tx_pause` to the same output — they are already read
+  from the CMAC and are the primary signal that Step 2 works.
+
+This is Ch. 10 §1.6, is required to validate every later step, and needs no RTL.
+
+## 13.3 Step 1 — driver-side pause control (S)
+
+Implement `get_pauseparam` / `set_pauseparam` against the CMAC flow-control CSRs
+(`CONF_RX_FC_CTRL_1/2` at `+0x0084/0x0088`, Ch. 9 §9.5), so `ethtool -a/-A` works
+and RX pause *reaction* (honouring pause frames the peer sends) can be turned on.
+
+Note the asymmetry: making the CMAC **obey** incoming pause is CSR-only. Making it
+**generate** pause needs Step 2, because something has to decide when.
+
+## 13.4 Step 2 — RTL: drive `ctl_tx_pause_req` from RX-path fill (M, the actual fix)
+
+The CMAC will emit pause frames when `ctl_tx_pause_req` is asserted; the missing
+piece is a fill-level signal to drive it. Design:
+
+1. Take `prog_full` (or `almost_full`) from the RX-path FIFO closest to the QDMA
+   handoff — `packet_adapter_rx.sv:273-279` already exposes both and discards them.
+   That FIFO filling *is* the definition of "the host is not draining fast enough".
+2. Add a small hysteresis block: assert on `prog_full`, deassert on a lower
+   watermark, so pause is not toggled per beat. Program `prog_full`/`prog_empty`
+   thresholds via the existing FIFO generics rather than new logic where possible.
+3. Drive `ctl_tx_pause_req[8]` (global pause) — or a chosen priority for PFC later —
+   and hold it for the CMAC's configured quanta.
+4. Program the CMAC pause quanta / refresh registers at init, and gate the whole
+   feature on the driver's `set_pauseparam` so it defaults to today's behaviour
+   until deliberately enabled.
+
+**Per-CMAC scoping matters.** The two CMACs share one PF and one QDMA. Pause must be
+asserted for the CMAC whose queues are backing up, not both, or one port's overload
+throttles the other's sender. The RX FIFOs are already per-CMAC in the plugin, so the
+fill signal is naturally per-port — keep it that way through to
+`ctl_tx_pause_req`.
+
+**Risk: head-of-line blocking.** Pause stops *all* traffic on that port, including
+flows whose queues are fine. That is inherent to 802.3x pause and is why PFC exists.
+Acceptable for a first cut; note it, and treat per-priority PFC as a later option.
+
+## 13.5 Step 3 — retest the one buffering combination never covered (S)
+
+`rx_desc_step` is clamped to ≤ ring/4, so the earlier sweeps could not raise the
+posted window beyond 512 on the default 2049-entry ring — and `rx_desc_step=4096`
+against that ring silently wedged the datapath (now guarded, driver `ad1a5d1`).
+**Large ring and large window together was therefore never measured.** Test
+`desc_rngcnt_idx=15 cmpl_rngcnt_idx=15 rx_desc_step=4096` (posted window
+2048-6144, ~16x today) at fixed 40 G offered UDP before concluding buffering is
+irrelevant. Cheap, and it either closes part of the gap or removes the last doubt.
+
+## 13.6 Step 4 — QDMA C2H prefetch over-subscription (S-M, secondary)
+
+Read from hardware:
+
+```
+C2H_PFCH_CFG_1 (0xA80) = 0x000c000c  ->  EVT_QCNT_TH = 12,  QCNT = 12
+C2H_PFCH_CFG_2 (0xA84) = 0x804003c8  ->  FENCE=1, LL_SZ_TH=1024, VAR_DESC_NUM=15, NUM=8
+C2H_PFCH_CFG   (0xB08) = 0x01000100  ->  EVT_PFCH_FL_TH = 256, PFCH_FL_TH = 256
+C2H_PFCH_CACHE_DEPTH (0xBE0) = 0x001f0010  ->  MAX_STBUF = 31, CACHE_DEPTH = 16
+```
+
+The prefetch engine tracks **12 queues** and caches **16** entries, while this design
+runs **14 RX queues per port, 28 total**. Over-subscription means prefetch context
+eviction and longer descriptor-fetch latency exactly when a burst arrives. Test by
+(a) raising `QCNT`/cache depth if the hardware permits, and (b) reducing active
+queues per port to ≤12 via `ethtool -X` and re-measuring — (b) needs no code and
+would confirm or kill the hypothesis in one run.
+
+## 13.7 Step 5 — the missing instrument (M)
+
+Nothing here resolves *how deep* a burst the path can absorb, because 0.5 s counter
+sampling cannot see a burst. Options, cheapest first:
+
+- **Onset bisection:** binary-search the offered rate at which drops first appear,
+  at several `rx_desc_step` values. The onset rate is a proxy for absorbable depth
+  and needs no new tooling.
+- **Sender-side pacing sweep:** iperf3 `--pacing-timer` / smaller `-b` bursts to vary
+  burstiness at constant average rate. If drops track burstiness rather than average
+  rate, that is direct confirmation of the §13.1 model.
+- **Hardware burst counter:** a plugin diag counter recording max RX FIFO occupancy
+  (a high-water mark register), which is a few lines of RTL next to the existing diag
+  counters and answers the question directly.
+
+The pacing sweep is the highest value per effort and should precede any RTL.
+
+## 13.8 Verification
+
+Success is defined against the reference on the same bench, not against ourselves:
+
+| Test | Target |
+|------|--------|
+| 40 G offered unpaced UDP, MTU 9000, 14 queues | **≤ 0.1 %** drops (CX-7 measures 0.0000-0.0753 %) |
+| 64 G offered | substantially better than today's 3.6 %; CX-7 does ~0.01 % |
+| `stat_tx_pause` | non-zero once Step 2 is enabled — proof pause is actually emitted |
+| TCP line rate | unchanged at 96-98 Gbit/s; pause must not cost throughput |
+| Latency, idle | unchanged (~0.10 ms); pause must not add latency when not congested |
+| `DESC_RSP_ERR_ACCEPTED` | remains 0 |
+| Other port unaffected | load on CMAC0 must not throttle CMAC1's sender (§13.4) |
+
+## 13.9 Effort and order
+
+| Step | What | Effort |
+|------|------|--------|
+| 0 | Surface drops + pause counters (§1.6) | S |
+| 3 | Large ring + large posted window retest | S |
+| 4b | ≤12 queues via `ethtool -X`, re-measure | S |
+| 5 | Pacing sweep (confirms the model) | S |
+| 1 | `ethtool -a/-A`, RX pause reaction (§1.5) | S |
+| 2 | RTL: fill → `ctl_tx_pause_req`, per CMAC | M |
+| 4a | Prefetch register tuning | S-M |
+
+Do 0, 3, 4b and 5 first: all are days, need no RTL, and either narrow or eliminate
+the alternatives before committing to a gateware cycle. Step 2 is the real fix and
+the only one that makes sustained overload lossless, but it costs a rebuild + reflash
+(~78 min build, ~15 min flash) and should be entered with the model confirmed.

@@ -44,6 +44,7 @@ If you are… | Start with
 | 10 | [Roadmap: From Working Link to Full NIC](10-roadmap.md) | Gap analysis by tier (table-stakes → SmartNIC), FPGA-vs-driver split, effort estimates |
 | 11 | [Per-Port RSS Coexisting with qid-Steering](11-rss-implementation-plan.md) | `RSS_ON_EXT` combine mode — design, hardware verification, and the open C2H `MTY`/`LEN` investigation |
 | 12 | [Adaptive Interrupt Moderation (DIM)](12-dim-implementation-plan.md) | Plan for replacing static C2H coalescing with the kernel DIM library — **plan only** |
+| 13 | [Link-Level Flow Control](13-flow-control-plan.md) | Root cause of the C2H drop gap vs a ConnectX-7, and the plan to fix it — **plan only** |
 
 ---
 
