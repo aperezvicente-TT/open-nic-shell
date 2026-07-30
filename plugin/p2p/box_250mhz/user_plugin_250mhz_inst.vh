@@ -27,6 +27,13 @@ end
 
 localparam C_NUM_USER_BLOCK = 1;
 
+// Ch. 13 §13.4 link-level flow control: this plugin exposes no RX FIFO fill, so
+// it never asks for pause.  Tied off here (rather than left floating) because
+// box_250mhz declares `rx_fifo_congested` unconditionally.  With this at 0,
+// cmac_pause_control sees no congestion from the plugin side and behaves exactly
+// as before regardless of FLOW_CTRL_EN.
+assign rx_fifo_congested = {NUM_CMAC_PORT{1'b0}};
+
 // Make sure for all the unused reset pair, corresponding bits in
 // "mod_rst_done" are tied to 0
 assign mod_rst_done[15:C_NUM_USER_BLOCK] = {(16-C_NUM_USER_BLOCK){1'b1}};

@@ -66,6 +66,31 @@ module cmac_subsystem_cmac_wrapper #(
   output         link_up,
   input          cmac_sys_reset,
 
+  // -------------------------------------------------------------------------
+  // 802.3x / PFC link-level flow control (Ch. 13 §13.3.1, §13.4)
+  //
+  // These are the ENTIRE user-side pause interface of this IP configuration.
+  // With ENABLE_AXI_INTERFACE=1 the generated core exposes no
+  // ctl_tx_pause_enable / ctl_tx_pause_quanta* / ctl_rx_pause_enable /
+  // ctl_rx_pause_ack ports at all — verified against
+  // build/au200_eth_1pf_2cmac_qid/vivado_ip/cmac_usplus_0/cmac_usplus_0_stub.v,
+  // which carries only `input [8:0] ctl_tx_pause_req` (:408),
+  // `input ctl_tx_resend_pause` (:409) and `output [8:0] stat_rx_pause_req`
+  // (:303).  Everything else lives in the AXI-Lite CSRs, which the driver
+  // already programs in full (CONF_TX_FC_CTRL_1 = 0x1FF, all quanta/refresh at
+  // maximum — read back from live hardware, §13.3).
+  //
+  // Previously ctl_tx_pause_req was tied to 9'b0 here and stat_rx_pause_req was
+  // connected to the IP and then read by nobody, so this link had never sent or
+  // received a pause frame (stat_tx_pause = stat_rx_pause = 0 in ethtool -S).
+  // Hoisting all three to ports moves the policy into cmac_subsystem, which is
+  // elaboratable out-of-context; this file cannot be, because of the encrypted
+  // CMAC IP.
+  // -------------------------------------------------------------------------
+  input    [8:0] ctl_tx_pause_req_in,     // 1 = emit/refresh pause for that priority
+  input          ctl_tx_resend_pause_in,  // force an immediate re-send
+  output   [8:0] stat_rx_pause_req_out,   // the PEER is asking us to pause
+
   // PTP timestamp interface
   input  wire [79:0] ptp_time,            // Current PTP time (cmac_clk domain, for TX)
   input  wire [79:0] ptp_time_rx,         // Current PTP time (rx_serdes_clk domain, for RX)
@@ -340,8 +365,17 @@ module cmac_subsystem_cmac_wrapper #(
   assign gtwiz_reset_rx_datapath = 1'b0;
   assign gtwiz_reset_tx_datapath = 1'b0;
   assign tx_preamblein           = 56'b0;
-  assign ctl_tx_pause_req        = 9'b0;
-  assign ctl_tx_resend_pause     = 1'b0;
+  // Was `9'b0` / `1'b0` — the single missing piece that left this design with no
+  // way to backpressure a sender (Ch. 13 §13.1).  The requesting policy lives in
+  // cmac_subsystem (cmac_pause_control), which drives 9'b0 / 1'b0 when its
+  // FLOW_CTRL_EN parameter is 0, reproducing the old behaviour bit-for-bit.
+  // Both are tx_clk (== txusrclk2 == cmac_clk) signals.
+  assign ctl_tx_pause_req        = ctl_tx_pause_req_in;
+  assign ctl_tx_resend_pause     = ctl_tx_resend_pause_in;
+  // §13.3.1: expose the peer's pause request so shell logic can actually react
+  // to it.  rx_clk domain, and rx_clk is tied to txusrclk2 below, so this is
+  // also cmac_clk — no CDC required at the consumer.
+  assign stat_rx_pause_req_out   = stat_rx_pause_req;
   assign ctl_tx_send_idle        = 1'b0;
   assign ctl_tx_send_rfi         = 1'b0;
   assign ctl_tx_send_lfi         = 1'b0;

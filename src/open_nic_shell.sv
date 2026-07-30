@@ -26,7 +26,36 @@ module open_nic_shell #(
   parameter int    NUM_PHYS_FUNC   = 1,
   parameter int    NUM_QUEUE       = 512,
   parameter int    NUM_QDMA        = 1,
-  parameter int    NUM_CMAC_PORT   = 1
+  parameter int    NUM_CMAC_PORT   = 1,
+
+  // ==========================================================================
+  // Link-level flow control (docs/13-flow-control-plan.md §13.3.1, §13.4)
+  //
+  // THE MASTER SWITCHES.  Both default to 0, and with both at 0 this build is
+  // functionally identical to every bitstream produced before the feature was
+  // added: ctl_tx_pause_req stays 9'b0, no RX-path fill is measured, and the
+  // TX pause gate is a pair of wires.  Turn on deliberately (either by editing
+  // these defaults or by passing generics from the build flow).
+  //
+  //   FLOW_CTRL_EN       pause GENERATION: per-CMAC RX fill -> that CMAC's
+  //                      ctl_tx_pause_req.  This is the §13.1 root-cause fix
+  //                      for the 1.2-3.6 % C2H drop under unpaced UDP.
+  //                      Acceptance criterion is `stat_tx_pause` becoming
+  //                      non-zero (§13.8).
+  //   FLOW_CTRL_REACT_EN pause REACTION: honour the peer's pause request
+  //                      instead of ignoring it (§13.3.1).  Independent of the
+  //                      above and independently switchable, because it is a
+  //                      TX-side conformance fix, not a drop fix.
+  //
+  // NOTE (§13.3, carried forward): the driver programs all five pause quanta
+  // and all five refresh registers to MAXIMUM on every CMAC enable, so the very
+  // first pause frame we emit requests the longest possible duration (0xFFFF
+  // quanta ~= 335 us at 100 G).  Our XOFF release does emit a zero-quanta XON,
+  // which cuts that short, but the quanta still want retuning down in the
+  // driver before this is run in anger.  That is out of scope for the RTL.
+  // ==========================================================================
+  parameter int    FLOW_CTRL_EN       = 0,
+  parameter int    FLOW_CTRL_REACT_EN = 0
 ) (
 `ifdef __synthesis__
 
@@ -446,6 +475,23 @@ module open_nic_shell #(
 
 
   wire     [NUM_CMAC_PORT-1:0] cmac_link_up;
+
+  // ---------------------------------------------------------------------------
+  // Link-level flow control fill signals (docs/13-flow-control-plan.md §13.4)
+  //
+  // STRICTLY PER-PORT.  Bit i belongs to CMAC i and is consumed only by CMAC i's
+  // cmac_subsystem.  §13.4: "The two CMACs share one PF and one QDMA.  Pause
+  // must be asserted for the CMAC whose queues are backing up, not both, or one
+  // port's overload throttles the other's sender."  Both vectors are indexed by
+  // the same generate variable `i` that selects the packet_adapter and
+  // cmac_subsystem instance, so there is no path for bit 0 to reach CMAC 1.
+  // ---------------------------------------------------------------------------
+  // packet_adapter RX packet-buffer watermark, cmac_clk[i] domain.  This is the
+  // FIFO that actually drops, so it is the last-resort trigger.
+  wire     [NUM_CMAC_PORT-1:0] adap_rx_buf_congested;
+  // box_250mhz plugin per-CMAC RX FIFO watermark, axis_aclk domain.  Downstream
+  // of the buffer above, so it fills first: the early-warning trigger.
+  wire     [NUM_CMAC_PORT-1:0] box0_rx_fifo_congested;
 
   wire                  [31:0] shell_rstn;
   wire                  [31:0] shell_rst_done;
@@ -885,10 +931,11 @@ module open_nic_shell #(
 
   generate for (genvar i = 0; i < NUM_CMAC_PORT; i++) begin: cmac_port
     packet_adapter #(
-      .CMAC_ID     (i),
-      .MIN_PKT_LEN (MIN_PKT_LEN),
-      .MAX_PKT_LEN (MAX_PKT_LEN),
-      .PKT_CAP     (PKT_CAP)
+      .CMAC_ID      (i),
+      .MIN_PKT_LEN  (MIN_PKT_LEN),
+      .MAX_PKT_LEN  (MAX_PKT_LEN),
+      .PKT_CAP      (PKT_CAP),
+      .FLOW_CTRL_EN (FLOW_CTRL_EN)
     ) packet_adapter_inst (
       .s_axil_awvalid       (axil_adap_awvalid[i]),
       .s_axil_awaddr        (axil_adap_awaddr[`getvec(32, i)]),
@@ -942,6 +989,9 @@ module open_nic_shell #(
       .s_axis_rx_tuser_err     (axis_adap_rx_322mhz_tuser_err[i]),
       .s_axis_rx_tuser_ptp_ts  (axis_adap_rx_322mhz_tuser_ptp_ts[`getvec(80, i)]),
 
+      // Ch. 13 §13.4: this port's RX packet-buffer watermark, cmac_clk[i].
+      .rx_buf_congested        (adap_rx_buf_congested[i]),
+
       .mod_rstn             (adap_rstn[i]),
       .mod_rst_done         (adap_rst_done[i]),
 
@@ -951,9 +1001,11 @@ module open_nic_shell #(
     );
 
     cmac_subsystem #(
-      .CMAC_ID     (i),
-      .MIN_PKT_LEN (MIN_PKT_LEN),
-      .MAX_PKT_LEN (MAX_PKT_LEN)
+      .CMAC_ID            (i),
+      .MIN_PKT_LEN        (MIN_PKT_LEN),
+      .MAX_PKT_LEN        (MAX_PKT_LEN),
+      .FLOW_CTRL_EN       (FLOW_CTRL_EN),
+      .FLOW_CTRL_REACT_EN (FLOW_CTRL_REACT_EN)
     ) cmac_subsystem_inst (
       .s_axil_awvalid               (axil_cmac_awvalid[i]),
       .s_axil_awaddr                (axil_cmac_awaddr[`getvec(32, i)]),
@@ -993,6 +1045,13 @@ module open_nic_shell #(
       .tx_ptp_ts_tag                (ptp_tx_ts_tag[`getvec(16, i)]),
       .tx_ptp_ts_valid              (ptp_tx_ts_valid[i]),
       .rx_serdes_clk0               (rx_serdes_clk[i]),
+
+      // ---------------------------------------------------------------------
+      // Link-level flow control, PER PORT (Ch. 13 §13.4).  Both indices are
+      // `i`: CMAC i is paused by CMAC i's own RX-path fill and by nothing else.
+      // ---------------------------------------------------------------------
+      .rx_buf_congested             (adap_rx_buf_congested[i]),
+      .rx_fifo_congested_async      (box0_rx_fifo_congested[i]),
 
 `ifdef __synthesis__
       .gt_rxp                       (qsfp_rxp[`getvec(4, i)]),
@@ -1042,7 +1101,8 @@ module open_nic_shell #(
     .USE_PHYS_FUNC (USE_PHYS_FUNC),
     .NUM_PHYS_FUNC (NUM_PHYS_FUNC),
     .NUM_QDMA      (NUM_QDMA),
-    .NUM_CMAC_PORT (NUM_CMAC_PORT)
+    .NUM_CMAC_PORT (NUM_CMAC_PORT),
+    .FLOW_CTRL_EN  (FLOW_CTRL_EN)
   ) box_250mhz_inst (
     .s_axil_awvalid                   (axil_box0_awvalid),
     .s_axil_awaddr                    (axil_box0_awaddr),
@@ -1102,6 +1162,10 @@ module open_nic_shell #(
     .s_axis_adap_rx_250mhz_tuser_dst      (axis_adap_rx_250mhz_tuser_dst),
     .s_axis_adap_rx_250mhz_tuser_ptp_ts   (axis_adap_rx_250mhz_tuser_ptp_ts),
     .s_axis_adap_rx_250mhz_tready         (axis_adap_rx_250mhz_tready),
+
+    // Ch. 13 §13.4: per-CMAC plugin RX FIFO watermark, consumed by
+    // cmac_subsystem_inst[i] above.  Vector, one bit per port, never ORed.
+    .rx_fifo_congested                    (box0_rx_fifo_congested),
 
     .mod_rstn                         (user_250mhz_rstn),
     .mod_rst_done                     (user_250mhz_rst_done),

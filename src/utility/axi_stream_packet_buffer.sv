@@ -55,6 +55,21 @@ module axi_stream_packet_buffer #(
   output          [15:0] m_axis_tuser_size,
   input                  m_axis_tready,
 
+  // Write-side (s_aclk domain) occupancy of the packet RAM, in beats, and the
+  // RAM depth it is measured against.  Both are zero-extended to a fixed 16
+  // bits so callers do not have to re-derive C_RAM_ADDR_W from MAX_PKT_LEN /
+  // PKT_CAP -- getting that formula subtly wrong would silently mis-place a
+  // flow-control watermark.
+  //
+  // Added for Ch. 13 §13.4 (link-level flow control): this is THE fill level
+  // that matters, because `s_axis_tready = ~ram_full` below is exactly the
+  // signal whose deassertion causes packets to be discarded.  Previously the
+  // occupancy existed as an internal counter and was never exported, which is
+  // half of why this design had no way to backpressure a sender.  Callers that
+  // do not need it simply omit the port.
+  output          [15:0] s_axis_data_count,
+  output          [15:0] s_axis_data_depth,
+
   input                  s_aclk,
   input                  s_aresetn,
   input                  m_aclk
@@ -295,6 +310,12 @@ module axi_stream_packet_buffer #(
 
   assign ram_empty     = (ram_data_cnt == 0);
   assign ram_full      = (ram_data_cnt == C_RAM_DEPTH);
+
+  // Export the occupancy / depth (see the port comment).  C_RAM_ADDR_W is at
+  // most $clog2(9600*8/512*64) = 14, so ram_data_cnt is at most 15 bits and
+  // both always fit in 16.
+  assign s_axis_data_count = 16'(ram_data_cnt);
+  assign s_axis_data_depth = 16'(C_RAM_DEPTH);
 
   assign s_axis_tready = ~ram_full;
   assign ram_ena       = s_axis_tvalid && s_axis_tready && ~drop_busy;

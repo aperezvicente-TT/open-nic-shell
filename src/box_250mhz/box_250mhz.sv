@@ -22,7 +22,11 @@ module box_250mhz #(
   parameter int USE_PHYS_FUNC = 1,
   parameter int NUM_PHYS_FUNC = 1,
   parameter int NUM_QDMA      = 1,
-  parameter int NUM_CMAC_PORT = 1
+  parameter int NUM_CMAC_PORT = 1,
+  // Link-level flow control (Ch. 13 §13.4).  Passed to the user plugin so it
+  // can expose its per-CMAC RX FIFO fill; 0 => `rx_fifo_congested` is tied to 0
+  // and no watermark logic exists.  Defaults OFF.
+  parameter int FLOW_CTRL_EN  = 0
 ) (
   input                          s_axil_awvalid,
   input                   [31:0] s_axil_awaddr,
@@ -85,6 +89,13 @@ module box_250mhz #(
   input   [16*NUM_CMAC_PORT-1:0] s_axis_adap_rx_250mhz_tuser_dst,
   input   [80*NUM_CMAC_PORT-1:0] s_axis_adap_rx_250mhz_tuser_ptp_ts,
   output     [NUM_CMAC_PORT-1:0] s_axis_adap_rx_250mhz_tready,
+
+  // Link-level flow control (Ch. 13 §13.4): per-CMAC "my RX FIFO is backing up,
+  // ask this port's peer to stop".  Bit c belongs to CMAC c ONLY and the shell
+  // must keep it that way — the two CMACs share one PF and one QDMA, so a
+  // shared/ORed congestion signal would let one port's overload throttle the
+  // other port's sender.  axis_aclk (250 MHz) domain; the consumer synchronises.
+  output     [NUM_CMAC_PORT-1:0] rx_fifo_congested,
 
   input                   [15:0] mod_rstn,
   output                  [15:0] mod_rst_done,

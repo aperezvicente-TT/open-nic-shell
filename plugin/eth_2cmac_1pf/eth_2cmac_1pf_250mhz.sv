@@ -54,7 +54,24 @@
 `timescale 1ns/1ps
 module eth_2cmac_1pf_250mhz #(
   parameter int NUM_QDMA = 1,
-  parameter int NUM_INTF = 1
+  parameter int NUM_INTF = 1,
+
+  // ==========================================================================
+  // Link-level flow control (docs/13-flow-control-plan.md §13.4)
+  //
+  // DEFAULTS OFF.  With FLOW_CTRL_EN = 0 the occupancy counters and watermark
+  // logic are not instantiated and `rx_fifo_congested` is tied to 0, so a
+  // bitstream built now behaves exactly as it does today.
+  // ==========================================================================
+  parameter int FLOW_CTRL_EN  = 0,
+  // Watermarks as right-shift amounts of ARB_FIFO_DEPTH.  Defaults:
+  //   xoff = depth >> 1  = 256 beats (half full)
+  //   xon  = depth >> 3  =  64 beats (one eighth)
+  // Wide band on purpose: this FIFO is the early-warning reservoir, and a
+  // 192-beat drain gap is ~12 KB, i.e. many microseconds of hysteresis rather
+  // than a per-beat flap.
+  parameter int FC_XOFF_SHIFT = 1,
+  parameter int FC_XON_SHIFT  = 3
 ) (
   input        [NUM_INTF*2-1:0] s_axil_awvalid,
   input     [32*NUM_INTF*2-1:0] s_axil_awaddr,
@@ -119,6 +136,14 @@ module eth_2cmac_1pf_250mhz #(
   input   [16*NUM_INTF-1:0] s_axis_adap_rx_250mhz_tuser_dst,
   input   [80*NUM_INTF-1:0] s_axis_adap_rx_250mhz_tuser_ptp_ts,
   output     [NUM_INTF-1:0] s_axis_adap_rx_250mhz_tready,
+
+  // Link-level flow control (Ch. 13 §13.4).  One bit PER CMAC: bit c means
+  // "CMAC c's RX FIFO is backing up, ask CMAC c's peer to stop".  The shell
+  // routes bit c to CMAC c's ctl_tx_pause_req and to nothing else — the two
+  // CMACs share one PF and one QDMA, so ORing these together would let one
+  // port's overload throttle the other port's sender, which §13.4 calls out
+  // explicitly as a bug.  axis_aclk (250 MHz) domain.
+  output     [NUM_INTF-1:0] rx_fifo_congested,
 
   input                     mod_rstn,
   output                    mod_rst_done,
@@ -401,6 +426,69 @@ module eth_2cmac_1pf_250mhz #(
                               && s_axis_adap_rx_250mhz_tlast[c];
     assign arb_in_pulse[c]     = arb_in_tvalid[c] && arb_in_tready[c]
                               && arb_in_tlast[c];
+
+    // -----------------------------------------------------------------------
+    // Flow-control fill tap for CMAC c (Ch. 13 §13.4)
+    //
+    // This FIFO sits between the CMAC RX adapter and the QDMA C2H handoff, so
+    // it is the first thing to fill when the host stops draining — earlier than
+    // the packet_adapter RX buffer upstream of it, which is why it is the
+    // early-warning source while that buffer is the last-resort one.  Its fill
+    // outputs were discarded (`.almost_full_axis ()`, `.prog_full_axis ()`
+    // above, previously lines 394-395), which is half the reason this design
+    // had no way to backpressure a sender at all.
+    //
+    // We count occupancy ourselves rather than switch on the FIFO's own
+    // prog_full for two reasons:
+    //   1. USE_ADV_FEATURES defaults to "1000" and PROG_FULL_THRESH to 10 in
+    //      axi_stream_packet_fifo.sv:31-34, so `prog_full_axis` would fire at
+    //      ~10 beats out of 512 — that is "a packet is present", not
+    //      "congested".  Making it useful would mean changing the FIFO's IP
+    //      configuration, which would perturb synthesis of the existing FIFO
+    //      even with this feature disabled.
+    //   2. An explicit count gives an exact two-watermark hysteresis instead of
+    //      a single threshold that chatters per beat.
+    //
+    // Both sides of this FIFO are axis_aclk (CLOCKING_MODE "common_clock"), so
+    // a single up/down counter is exact — no CDC, no skew.
+    // -----------------------------------------------------------------------
+    if (FLOW_CTRL_EN != 0) begin: gen_fc_tap
+      localparam int FC_CNT_W  = $clog2(ARB_FIFO_DEPTH) + 1;
+      localparam [FC_CNT_W-1:0] FC_XOFF_LVL = ARB_FIFO_DEPTH >> FC_XOFF_SHIFT;
+      localparam [FC_CNT_W-1:0] FC_XON_LVL  = ARB_FIFO_DEPTH >> FC_XON_SHIFT;
+
+      reg [FC_CNT_W-1:0] fc_fill;
+
+      wire fc_wr = s_axis_adap_rx_250mhz_tvalid[c] && s_axis_adap_rx_250mhz_tready[c];
+      wire fc_rd = arb_in_tvalid[c] && arb_in_tready[c];
+
+      always @(posedge axis_aclk) begin
+        if (~axis_aresetn) begin
+          fc_fill <= {FC_CNT_W{1'b0}};
+        end
+        else if (fc_wr && ~fc_rd) begin
+          fc_fill <= fc_fill + 1'b1;
+        end
+        else if (fc_rd && ~fc_wr) begin
+          fc_fill <= fc_fill - 1'b1;
+        end
+      end
+
+      fifo_fill_hysteresis #(
+        .CNT_W (FC_CNT_W)
+      ) fc_hyst_inst (
+        .clk       (axis_aclk),
+        .rstn      (axis_aresetn),
+        .fill      (fc_fill),
+        .xoff_lvl  (FC_XOFF_LVL),
+        .xon_lvl   (FC_XON_LVL),
+        .congested (rx_fifo_congested[c])
+      );
+    end
+    else begin: gen_no_fc_tap
+      // Today's behaviour: the fill level is measured by nobody.
+      assign rx_fifo_congested[c] = 1'b0;
+    end
   end
   endgenerate
 

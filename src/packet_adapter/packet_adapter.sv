@@ -20,7 +20,11 @@ module packet_adapter #(
   parameter int  CMAC_ID     = 0,
   parameter int  MIN_PKT_LEN = 64,
   parameter int  MAX_PKT_LEN = 1518,
-  parameter real PKT_CAP     = 64.0
+  parameter real PKT_CAP     = 64.0,
+
+  // Link-level flow control (Ch. 13 §13.4).  0 => `rx_buf_congested` is tied
+  // low and the watermark logic is not instantiated: today's behaviour.
+  parameter int  FLOW_CTRL_EN = 0
 ) (
   input          s_axil_awvalid,
   input   [31:0] s_axil_awaddr,
@@ -73,6 +77,10 @@ module packet_adapter #(
   output  [15:0] m_axis_rx_tuser_dst,
   output  [79:0] m_axis_rx_tuser_ptp_ts,
   input          m_axis_rx_tready,
+
+  // Link-level flow control (Ch. 13 §13.4): this CMAC's RX packet buffer is
+  // backing up.  cmac_clk domain — same domain as ctl_tx_pause_req.
+  output         rx_buf_congested,
 
   input          mod_rstn,
   output         mod_rst_done,
@@ -170,9 +178,10 @@ module packet_adapter #(
   );
 
   packet_adapter_rx #(
-    .CMAC_ID     (CMAC_ID),
-    .MAX_PKT_LEN (MAX_PKT_LEN),
-    .PKT_CAP     (PKT_CAP)
+    .CMAC_ID      (CMAC_ID),
+    .MAX_PKT_LEN  (MAX_PKT_LEN),
+    .PKT_CAP      (PKT_CAP),
+    .FLOW_CTRL_EN (FLOW_CTRL_EN)
   ) rx_inst (
     .s_axis_rx_tvalid     (s_axis_rx_tvalid),
     .s_axis_rx_tdata      (s_axis_rx_tdata),
@@ -195,6 +204,8 @@ module packet_adapter #(
     .rx_pkt_drop          (rx_pkt_drop),
     .rx_pkt_err           (rx_pkt_err),
     .rx_bytes             (rx_bytes),
+
+    .rx_buf_congested     (rx_buf_congested),
 
     .axis_aclk            (axis_aclk),
     .cmac_clk             (cmac_clk),

@@ -39,8 +39,11 @@ localparam C_NUM_USER_BLOCK = 1;
 assign mod_rst_done[15:C_NUM_USER_BLOCK] = {(16-C_NUM_USER_BLOCK){1'b1}};
 
 eth_2cmac_1pf_250mhz #(
-  .NUM_QDMA    (NUM_QDMA),
-  .NUM_INTF    (NUM_CMAC_PORT)
+  .NUM_QDMA     (NUM_QDMA),
+  .NUM_INTF     (NUM_CMAC_PORT),
+  // Ch. 13 §13.4 link-level flow control.  Inherited from box_250mhz, which
+  // inherits it from open_nic_shell; defaults OFF all the way up.
+  .FLOW_CTRL_EN (FLOW_CTRL_EN)
 ) eth_2cmac_1pf_250mhz_inst (
   .s_axil_awvalid                   (axil_p2p_awvalid),
   .s_axil_awaddr                    (axil_p2p_awaddr),
@@ -100,6 +103,9 @@ eth_2cmac_1pf_250mhz #(
   .s_axis_adap_rx_250mhz_tuser_dst      (s_axis_adap_rx_250mhz_tuser_dst),
   .s_axis_adap_rx_250mhz_tuser_ptp_ts   (s_axis_adap_rx_250mhz_tuser_ptp_ts),
   .s_axis_adap_rx_250mhz_tready         (s_axis_adap_rx_250mhz_tready),
+
+  // Per-CMAC RX FIFO fill -> that CMAC's ctl_tx_pause_req (Ch. 13 §13.4).
+  .rx_fifo_congested                    (rx_fifo_congested),
 
   .mod_rstn                         (mod_rstn[0]),
   .mod_rst_done                     (mod_rst_done[0]),

@@ -131,9 +131,21 @@ it is an 802.3x conformance bug against any real congested switch, it is on the
 The CMAC will emit pause frames when `ctl_tx_pause_req` is asserted; the missing
 piece is a fill-level signal to drive it. Design:
 
-1. Take `prog_full` (or `almost_full`) from the RX-path FIFO closest to the QDMA
-   handoff — `packet_adapter_rx.sv:273-279` already exposes both and discards them.
-   That FIFO filling *is* the definition of "the host is not draining fast enough".
+1. Take the occupancy of the RX **datapath reservoir**.
+
+   > **Correction (2026-07-29).** An earlier revision of this step pointed at
+   > `packet_adapter_rx.sv:273-279`. That is wrong: those `.almost_full()` /
+   > `.prog_full()` outputs belong to `rx_ptp_ts_fifo_inst`, an 80-bit × 64-deep
+   > **PTP timestamp sideband** FIFO holding one entry per packet. Its fill says
+   > nothing about datapath congestion. Verified against `git show HEAD` of that
+   > file.
+
+   The correct signal is the occupancy of `axi_stream_packet_buffer` inside
+   `packet_adapter_rx` — that is the buffer whose `s_axis_tready = ~ram_full`
+   (`axi_stream_packet_buffer.sv:299`) and whose deassertion raises `drop`
+   (`:130-131`), so it is literally the thing that discards. Use the plugin's
+   per-CMAC `arb_in_pkt_fifo` occupancy as an earlier warning, since it sits
+   downstream and fills first.
 2. Add a small hysteresis block: assert on `prog_full`, deassert on a lower
    watermark, so pause is not toggled per beat. Program `prog_full`/`prog_empty`
    thresholds via the existing FIFO generics rather than new logic where possible.
@@ -286,3 +298,66 @@ receiver core placement) also moves per run.
    parallel: its acceptance criterion is `stat_tx_pause` becoming non-zero and the
    CX-7-relative drop gap closing, both of which are large effects rather than the
    fractions-of-a-percent this instrument cannot resolve.
+
+## 13.12 Step 2 status — RTL implemented, UNBUILT (2026-07-29)
+
+Implemented in the working tree; **no bitstream built, nothing on hardware**.
+
+New modules under `src/utility/`: `fifo_fill_hysteresis.sv` (Schmitt trigger on a
+FIFO occupancy count, watermarks as inputs so callers derive them from the FIFO's own
+depth), `cmac_pause_control.sv` (per-CMAC generation + reaction, level CDC, XOFF hold
+FSM, reaction watchdog), `axi_stream_pause_gate.sv` (packet-atomic gate on
+`tvalid`/`tready` only — blocks at inter-packet gaps so a frame in flight always
+completes; chopping mid-frame would risk `tx_unfout` and a truncated frame on the
+wire).
+
+Signal path, per CMAC *c*, with no reduction across ports anywhere:
+
+```
+plugin arb_in_pkt_fifo[c] occupancy  -> hysteresis -> rx_fifo_congested[c]   (early warning)
+packet_adapter_rx pkt_buf occupancy  -> hysteresis -> rx_buf_congested[c]    (last resort)
+        -> cmac_pause_control[c] XOFF FSM (hold >= 1024 cyc ~ 3.2 us)
+        -> ctl_tx_pause_req[8]  (was tied to 9'b0)
+stat_rx_pause_req[8:0] -> reaction gate -> CMAC c TX tvalid/tready
+```
+
+**Default-off is verified structurally, not asserted.** With `FLOW_CTRL_EN=0` and
+`FLOW_CTRL_REACT_EN=0` (both defaults), `cmac_pause_control` synthesises
+out-of-context to **0 FF, 0 LUT** — the logic collapses entirely — and cell counts for
+`cmac_subsystem`, `packet_adapter` and `eth_2cmac_1pf_250mhz` are identical to
+`git show HEAD`. All modules elaborate clean; with generation enabled Vivado reports
+`ctl_tx_pause_req[7:0]` constant-0 and bit 8 live, which is the intent.
+
+### Unresolved risks — read before enabling
+
+1. **`ctl_tx_pause_req` semantics are from PG203, not measured.** The design assumes
+   holding the bit makes the CMAC emit a pause frame and refresh it on the programmed
+   refresh timer, and that clearing it sends a zero-quanta XON. If the core instead
+   wants a pulse per frame, we emit one XOFF and then rely entirely on the refresh
+   timer. This works *only* because §13.3's quanta and refresh are both maxed — **if
+   the driver is retuned to lower quanta without also lowering refresh, the peer will
+   resume before we release.** `ctl_tx_resend_pause` is plumbed and tied to 0 as the
+   hook for that case.
+2. **The reaction path is entirely unexercised** — `stat_rx_pause` has been 0 for the
+   lifetime of this design. This IP config exposes **no `ctl_rx_pause_ack` port**
+   (checked against the generated `cmac_usplus_0_stub.v`), so the core must ack
+   internally and self-time the quanta; that is an inference. If it is wrong and the
+   level latches, an unbounded gate would deadlock that port's TX. Bounded by
+   `FC_REACT_MAX_CYCLES` (default 2^18 ≈ 813 µs at 322.27 MHz, > 2x the longest legal
+   pause) so the worst case is one recoverable stall.
+   **Enable `FLOW_CTRL_REACT_EN` separately from `FLOW_CTRL_EN` and test it alone.**
+3. **Watermarks are first-principles guesses** (256/64 beats on the plugin FIFO,
+   3/4 ↔ 1/2 on the adapter buffer) — and §13.10's blocker means the instrument to
+   tune them is only partly in place.
+4. **No timing analysis.** With reaction enabled, `tx_axis_tready` gains one LUT level
+   in the 322 MHz CMAC TX handshake.
+5. **Compile-time switchable only.** §13.4 point 4 wanted runtime gating from
+   `set_pauseparam`; that needs a CSR path into this logic. `ethtool -a/-A` now exists
+   (driver `9cf9046`) but cannot reach these parameters.
+6. **No observability.** `cmac_pause_control.xoff_active` is exported but
+   unconnected; wiring it to a diag counter would show XOFF assertions without relying
+   solely on the CMAC's `stat_tx_pause`.
+7. **Degenerate corner unguarded:** if `MAX_PKT_LEN`/`PKT_CAP` ever yield a packet
+   buffer ≤ 4 beats, the shift-derived xoff/xon collapse to the same value and
+   `rx_buf_congested` would latch high. Not reachable with any sane build
+   (9600/16 → 4096 beats; stock 1518/64 → 2048).

@@ -19,7 +19,29 @@
 module cmac_subsystem #(
   parameter int CMAC_ID     = 0,
   parameter int MIN_PKT_LEN = 64,
-  parameter int MAX_PKT_LEN = 1518
+  parameter int MAX_PKT_LEN = 1518,
+
+  // ==========================================================================
+  // Link-level flow control (docs/13-flow-control-plan.md §13.3.1, §13.4)
+  //
+  // BOTH DEFAULT OFF.  With the defaults, ctl_tx_pause_req is driven to 9'b0
+  // and the TX pause gate is transparent, which is bit-for-bit the behaviour of
+  // every bitstream built before this change.  Enabling is a deliberate act.
+  // ==========================================================================
+  // Pause GENERATION: drive ctl_tx_pause_req from this CMAC's RX-path fill.
+  parameter int FLOW_CTRL_EN       = 0,
+  // Pause REACTION: stop transmitting while the peer asks us to (§13.3.1).
+  parameter int FLOW_CTRL_REACT_EN = 0,
+  // ctl_tx_pause_req bit to drive.  8 = global 802.3x pause.
+  parameter int FC_PAUSE_PRIORITY  = 8,
+  // stat_rx_pause_req bits we honour.  0x1FF = global pause + any PFC priority.
+  parameter int FC_REACT_MASK      = 'h1FF,
+  // Minimum cmac_clk cycles to hold XOFF once asserted (anti-chatter).
+  parameter int FC_MIN_XOFF_CYCLES = 1024,
+  // Watchdog bound on how long a received pause may hold our TX off.  See the
+  // long note in cmac_pause_control.sv: stat_rx_pause_req has never been
+  // exercised on this bench, so an unbounded gate is not a risk worth taking.
+  parameter int FC_REACT_MAX_CYCLES = 262144
 ) (
   input          s_axil_awvalid,
   input   [31:0] s_axil_awaddr,
@@ -61,6 +83,23 @@ module cmac_subsystem #(
   output wire        rx_serdes_clk0,      // RX SerDes lane 0 clock output
 
   input  wire [15:0] s_axis_cmac_tx_tuser_ptp_tag,
+
+  // ==========================================================================
+  // Link-level flow control inputs — STRICTLY PER-CMAC (Ch. 13 §13.4)
+  //
+  // The two CMACs share one PF and one QDMA.  If one port's congestion paused
+  // both senders that would be a bug, so these two signals must only ever carry
+  // THIS CMAC's own RX-path fill.  open_nic_shell drives them from inside the
+  // per-port `cmac_port` generate loop, indexed by the same `i` that selects
+  // this instance's packet_adapter and its plugin RX FIFO.
+  // ==========================================================================
+  // From this CMAC's packet_adapter RX packet buffer (cmac_clk domain — the
+  // FIFO that actually drops; last line of defence, no CDC latency).
+  input  wire        rx_buf_congested,
+  // From this CMAC's plugin RX packet FIFO (250 MHz axis_aclk domain — sits
+  // downstream of the buffer above, so it fills first and is the early
+  // warning).  Synchronised into cmac_clk inside cmac_pause_control.
+  input  wire        rx_fifo_congested_async,
 
 `ifdef __synthesis__
   input    [3:0] gt_rxp,
@@ -145,6 +184,19 @@ module cmac_subsystem #(
   wire         axis_cmac_tx_tlast;
   wire         axis_cmac_tx_tuser_err;
   wire         axis_cmac_tx_tready;
+
+  // Post-pause-gate TX handshake (Ch. 13 §13.3.1).  Only tvalid/tready are
+  // gated; tdata/tkeep/tlast/tuser go straight to the CMAC untouched, so the
+  // gate adds no storage, no latency and no chance of the sideband drifting out
+  // of step with the data.
+  wire         axis_cmac_txg_tvalid;
+  wire         axis_cmac_txg_tready;
+
+  // Flow-control control-plane signals, all cmac_clk.
+  wire   [8:0] ctl_tx_pause_req;
+  wire         ctl_tx_resend_pause;
+  wire   [8:0] stat_rx_pause_req;
+  wire         tx_pause_gate;
 
   wire         axis_cmac_rx_tvalid;
   wire [511:0] axis_cmac_rx_tdata;
@@ -387,6 +439,57 @@ module cmac_subsystem #(
   assign axis_cmac_tx_tuser_err = axis_cmac_tx_tuser_wide[0];
   assign axis_cmac_tx_ptp_tag   = axis_cmac_tx_tuser_wide[16:1];
 
+  // ---------------------------------------------------------------------------
+  // Link-level flow control (Ch. 13 §13.3.1, §13.4)
+  //
+  // Generation: this CMAC's own RX-path fill -> ctl_tx_pause_req.  Reaction:
+  // stat_rx_pause_req -> tx_pause_gate -> hold off the next TX packet.
+  //
+  // Both halves are per-CMAC and there is no cross-port input in sight: the
+  // congestion inputs are this instance's, and the outputs go only to this
+  // instance's CMAC.  §13.4 requires exactly that — one port's overload must
+  // not throttle the other port's sender, and the two CMACs share one PF/QDMA
+  // so an accidental OR across ports would do precisely that.
+  // ---------------------------------------------------------------------------
+  cmac_pause_control #(
+    .GEN_ENABLE       (FLOW_CTRL_EN),
+    .REACT_ENABLE     (FLOW_CTRL_REACT_EN),
+    .PAUSE_PRIORITY   (FC_PAUSE_PRIORITY),
+    .REACT_MASK       (FC_REACT_MASK),
+    .MIN_XOFF_CYCLES  (FC_MIN_XOFF_CYCLES),
+    .REACT_MAX_CYCLES (FC_REACT_MAX_CYCLES)
+  ) pause_control_inst (
+    .cmac_clk            (cmac_clk),
+    .cmac_rstn           (cmac_rstn),
+
+    .congested_cmac_clk  (rx_buf_congested),
+    .congested_async     (rx_fifo_congested_async),
+
+    .stat_rx_pause_req   (stat_rx_pause_req),
+
+    .ctl_tx_pause_req    (ctl_tx_pause_req),
+    .ctl_tx_resend_pause (ctl_tx_resend_pause),
+    .tx_pause_gate       (tx_pause_gate),
+    .xoff_active         ()
+  );
+
+  // Packet-atomic TX hold-off.  When FLOW_CTRL_REACT_EN = 0 the gate module is
+  // still present but `pause` is a hard 1'b0, so `block` folds away to zero and
+  // this degenerates to two wires — no logic, no timing impact on the 322 MHz
+  // CMAC TX handshake.
+  axi_stream_pause_gate tx_pause_gate_inst (
+    .aclk          (cmac_clk),
+    .aresetn       (cmac_rstn),
+    .pause         (tx_pause_gate),
+
+    .s_axis_tvalid (axis_cmac_tx_tvalid),
+    .s_axis_tlast  (axis_cmac_tx_tlast),
+    .s_axis_tready (axis_cmac_tx_tready),
+
+    .m_axis_tvalid (axis_cmac_txg_tvalid),
+    .m_axis_tready (axis_cmac_txg_tready)
+  );
+
   axi_stream_rx_drain #(
     .TDATA_W       (512),
     .TUSER_W       (81),
@@ -476,12 +579,13 @@ module cmac_subsystem #(
     .s_axil_rvalid       (axil_cmac_rvalid),
     .s_axil_rready       (axil_cmac_rready),
 
-    .s_axis_tx_tvalid    (axis_cmac_tx_tvalid),
+    // tvalid/tready come from the pause gate; the payload is untouched.
+    .s_axis_tx_tvalid    (axis_cmac_txg_tvalid),
     .s_axis_tx_tdata     (axis_cmac_tx_tdata),
     .s_axis_tx_tkeep     (axis_cmac_tx_tkeep),
     .s_axis_tx_tlast     (axis_cmac_tx_tlast),
     .s_axis_tx_tuser_err (axis_cmac_tx_tuser_err),
-    .s_axis_tx_tready    (axis_cmac_tx_tready),
+    .s_axis_tx_tready    (axis_cmac_txg_tready),
 
     .m_axis_rx_tvalid    (axis_cmac_rx_tvalid),
     .m_axis_rx_tdata     (axis_cmac_rx_tdata),
@@ -507,6 +611,11 @@ module cmac_subsystem #(
     .tx_ptp_1588op_in    (axis_cmac_tx_ptp_tag != 16'd0 ? 2'b10 : 2'b00),
 
     .rx_serdes_clk0      (rx_serdes_clk0),
+
+    // Link-level flow control (Ch. 13 §13.3.1, §13.4)
+    .ctl_tx_pause_req_in    (ctl_tx_pause_req),
+    .ctl_tx_resend_pause_in (ctl_tx_resend_pause),
+    .stat_rx_pause_req_out  (stat_rx_pause_req),
 
     .axil_aclk           (axil_aclk)
   );
@@ -556,12 +665,12 @@ module cmac_subsystem #(
   end: cmac_sim
   endgenerate
 
-  assign m_axis_cmac_tx_sim_tvalid    = axis_cmac_tx_tvalid;
+  assign m_axis_cmac_tx_sim_tvalid    = axis_cmac_txg_tvalid;
   assign m_axis_cmac_tx_sim_tdata     = axis_cmac_tx_tdata;
   assign m_axis_cmac_tx_sim_tkeep     = axis_cmac_tx_tkeep;
   assign m_axis_cmac_tx_sim_tlast     = axis_cmac_tx_tlast;
   assign m_axis_cmac_tx_sim_tuser_err = axis_cmac_tx_tuser_err;
-  assign axis_cmac_tx_tready          = m_axis_cmac_tx_sim_tready;
+  assign axis_cmac_txg_tready         = m_axis_cmac_tx_sim_tready;
 
   assign axis_cmac_rx_tvalid          = s_axis_cmac_rx_sim_tvalid;
   assign axis_cmac_rx_tdata           = s_axis_cmac_rx_sim_tdata;
@@ -569,6 +678,10 @@ module cmac_subsystem #(
   assign axis_cmac_rx_tlast           = s_axis_cmac_rx_sim_tlast;
   assign axis_cmac_rx_tuser_err       = s_axis_cmac_rx_sim_tuser_err;
   assign link_up                      = 1'b0;
+
+  // No CMAC in simulation, so nobody ever asks us to pause.  The gate above
+  // therefore stays transparent and the sim TX path is unchanged.
+  assign stat_rx_pause_req            = 9'b0;
 
   // PTP not available in simulation - tie off outputs
   assign rx_ptp_ts_raw                = 80'b0;

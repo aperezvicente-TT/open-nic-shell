@@ -20,7 +20,20 @@ module packet_adapter_rx #(
   parameter int  CMAC_ID     = 0,
   parameter int  MIN_PKT_LEN = 64,
   parameter int  MAX_PKT_LEN = 1518,
-  parameter real PKT_CAP     = 1.5
+  parameter real PKT_CAP     = 1.5,
+
+  // --- Link-level flow control (Ch. 13 §13.4) ------------------------------
+  // 0 => `rx_buf_congested` is tied low and none of the watermark logic is
+  // instantiated, i.e. today's behaviour exactly.  Defaults OFF.
+  parameter int  FLOW_CTRL_EN     = 0,
+  // Watermarks as right-shift amounts of the packet-buffer depth, so they are
+  // exact powers-of-two fractions and fold to constants at synthesis:
+  //   xoff = depth - (depth >> FC_XOFF_SHIFT)   (2 => assert at 3/4 full)
+  //   xon  = depth >> FC_XON_SHIFT              (1 => release at 1/2 full)
+  // This buffer is the LAST reservoir before packets are discarded, so it is
+  // deliberately watched late; the early warning comes from the plugin FIFO.
+  parameter int  FC_XOFF_SHIFT    = 2,
+  parameter int  FC_XON_SHIFT     = 1
 ) (
   input          s_axis_rx_tvalid,
   input  [511:0] s_axis_rx_tdata,
@@ -44,6 +57,11 @@ module packet_adapter_rx #(
   output         rx_pkt_drop,
   output         rx_pkt_err,
   output  [15:0] rx_bytes,
+
+  // Link-level flow control (Ch. 13 §13.4): "this CMAC's RX packet buffer is
+  // backing up, ask the peer to stop".  cmac_clk domain, which is the same
+  // domain as the CMAC's ctl_tx_pause_req, so no CDC is needed downstream.
+  output         rx_buf_congested,
 
   input          axis_aclk,
   input          cmac_clk,
@@ -73,6 +91,11 @@ module packet_adapter_rx #(
   // PTP timestamp sideband: capture on first beat, write on packet completion
   reg  [79:0] rx_ptp_ts_captured;
   wire [79:0] rx_ptp_ts_fifo_dout;
+
+  // RX packet-buffer occupancy / depth (cmac_clk), used by the flow-control
+  // watermarks at the bottom of this file.
+  wire [15:0] pkt_buf_fill;
+  wire [15:0] pkt_buf_depth;
 
   axi_stream_register_slice #(
     .TDATA_W (512),
@@ -203,6 +226,9 @@ module packet_adapter_rx #(
     .m_axis_tuser_size (m_axis_rx_tuser_size),
     .m_axis_tready     (m_axis_rx_tready),
 
+    .s_axis_data_count (pkt_buf_fill),
+    .s_axis_data_depth (pkt_buf_depth),
+
     .s_aclk            (cmac_clk),
     .s_aresetn         (cmac_rstn),
     .m_aclk            (axis_aclk)
@@ -210,6 +236,47 @@ module packet_adapter_rx #(
 
   assign m_axis_rx_tuser_src = 16'h1 << (CMAC_ID + 6);
   assign m_axis_rx_tuser_dst = 0;
+
+  // ---------------------------------------------------------------------------
+  // Link-level flow control source: RX packet-buffer watermarks (Ch. 13 §13.4)
+  //
+  // `pkt_buf_inst` is the FIFO whose `s_axis_tready = ~ram_full` gates the CMAC
+  // RX stream (axi_stream_packet_buffer.sv:299); when it deasserts, `drop` is
+  // raised (:130-131) and the packet is discarded.  That discard is exactly the
+  // 1.2-3.6 % loss measured in Ch. 8 §8.8.1 against a ConnectX-7's 0.0000-
+  // 0.0753 % on the same bench -- the CX-7's advantage is not depth, it is that
+  // it can ask the sender to stop.  Its occupancy was computed internally and
+  // thrown away until now.
+  //
+  // This is the *last* reservoir before loss, so it is watched at 3/4 full and
+  // released at 1/2 (defaults).  With the shipped build parameters
+  // (-max_pkt_len 9600 -pkt_cap 16, script/build_eth_1pf_2cmac_qid.sh:56-57)
+  // C_RAM_ADDR_W = clog2(ceil(9600*8/512*16)) = clog2(2400) = 12, so depth is
+  // 4096 beats = 256 KB ~= 20 us of 100 G line rate; 1/4 of that is ~5 us of
+  // headroom for a pause frame to reach the sender and take effect.  Ample.
+  //
+  // cmac_clk domain throughout, so this reaches ctl_tx_pause_req without a CDC.
+  // Per-CMAC by construction: there is one packet_adapter per CMAC.
+  // ---------------------------------------------------------------------------
+  generate if (FLOW_CTRL_EN != 0) begin: gen_flow_ctrl
+    wire [15:0] fc_xoff_lvl = pkt_buf_depth - (pkt_buf_depth >> FC_XOFF_SHIFT);
+    wire [15:0] fc_xon_lvl  = pkt_buf_depth >> FC_XON_SHIFT;
+
+    fifo_fill_hysteresis #(
+      .CNT_W (16)
+    ) fc_hyst_inst (
+      .clk       (cmac_clk),
+      .rstn      (cmac_rstn),
+      .fill      (pkt_buf_fill),
+      .xoff_lvl  (fc_xoff_lvl),
+      .xon_lvl   (fc_xon_lvl),
+      .congested (rx_buf_congested)
+    );
+  end
+  else begin: gen_no_flow_ctrl
+    assign rx_buf_congested = 1'b0;
+  end
+  endgenerate
 
   // ---------------------------------------------------------------------------
   // PTP timestamp sideband FIFO (322MHz -> 250MHz)
