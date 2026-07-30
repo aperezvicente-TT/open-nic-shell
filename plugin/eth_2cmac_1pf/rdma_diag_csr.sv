@@ -112,6 +112,14 @@
 // counters occupy 0x000-0x044, which leaves exactly 0x048-0x07C free, and
 // that is what is used here.
 //
+// Confirmed against the IP of the bitstream actually built, not just the tcl:
+// box_250mhz_axi_crossbar_stub.v's CORE_GENERATION_INFO reads
+//   C_NUM_MASTER_SLOTS=3
+//   C_M_AXI_BASE_ADDR  = 0x...0000_1000 | 0x...0000_0080 | 0x...0000_0000
+//   C_M_AXI_ADDR_WIDTH = 0x0000000c 00000007 00000007
+// i.e. M00 = 0x000 width 7, M01 = 0x080 width 7, M02 = 0x1000 width 12.  Seven
+// bits is 0x80 bytes.  There is no 4 KB window here to put registers in.
+//
 // FLOW-CONTROL CLOCKING: nothing crosses a clock domain.  This register
 // file already runs on `dp_aclk` (= axis_aclk, 250 MHz), which is the very
 // domain of `arb_in_pkt_fifo` and of its hysteresis block -- both sides of

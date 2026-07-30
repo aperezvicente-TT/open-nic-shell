@@ -302,9 +302,12 @@ module packet_adapter #(
   // NO NEW XDC IS NEEDED, and that was a design constraint rather than luck.
   // constr/au200/timing.xdc:39-48 already applies
   //   set_max_delay -datapath_only ... 3.103
-  // in BOTH directions between the QDMA-derived 125 MHz AXI-Lite clock
-  // (clk_out1_qdma_subsystem_clk_div, = axil_aclk) and every cmac_clk, exactly
-  // because axi_lite_register CDCs already cross there.  Both structures below
+  // in BOTH directions between clk_out1_qdma_subsystem_clk_div and every
+  // cmac_clk, exactly because axi_lite_register CDCs already cross there.  That
+  // clock IS axil_aclk: qdma_subsystem_qdma_wrapper.v:218-220 wires the clock
+  // wizard's clk_out1 (125 MHz, vivado_ip/qdma_subsystem_clk_div.tcl:27)
+  // straight to the axil_aclk output.  Checked, not assumed -- the whole
+  // no-new-constraints argument rests on it.  Both structures below
   // are data-plus-qualifier crossings whose data nets are stable for tens of
   // nanoseconds before anything samples them, so a 3.103 ns datapath bound is
   // satisfied with three orders of magnitude of margin.  A bare per-bit
