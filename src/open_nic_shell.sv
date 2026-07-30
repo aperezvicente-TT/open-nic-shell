@@ -55,7 +55,13 @@ module open_nic_shell #(
   // driver before this is run in anger.  That is out of scope for the RTL.
   // ==========================================================================
   parameter int    FLOW_CTRL_EN       = 0,
-  parameter int    FLOW_CTRL_REACT_EN = 0
+  parameter int    FLOW_CTRL_REACT_EN = 0,
+  // Reset value of the runtime FC_MIN_XOFF register (packet_adapter CSR 0x08C),
+  // in cmac_clk cycles.  1024 ~= 3.2 us at 322.265625 MHz, which is what the
+  // RTL used as a compile-time constant before the CSR existed.  Passed only to
+  // packet_adapter, which owns the register file; cmac_subsystem now receives
+  // the live value over a port instead of a parameter.
+  parameter int    FC_MIN_XOFF_CYCLES = 1024
 ) (
 `ifdef __synthesis__
 
@@ -492,6 +498,28 @@ module open_nic_shell #(
   // box_250mhz plugin per-CMAC RX FIFO watermark, axis_aclk domain.  Downstream
   // of the buffer above, so it fills first: the early-warning trigger.
   wire     [NUM_CMAC_PORT-1:0] box0_rx_fifo_congested;
+
+  // ---------------------------------------------------------------------------
+  // Runtime flow-control control plane, per port (Ch. 13 §13.12 risk 5 / 6)
+  //
+  // The CSR lives in packet_adapter[i] (0x0B080 for CMAC0, 0x0F080 for CMAC1 in
+  // BAR2 terms -- C_ADAP{0,1}_BASE_ADDR in system_config_address_map.sv:273/275
+  // plus the 0x080 block offset); the logic it controls lives in
+  // cmac_subsystem[i].  These wires are that link and every one of them is in
+  // cmac_clk[i]: the config trio has already been synchronised out of axil_aclk
+  // inside packet_adapter, and the status pair are raw cmac_pause_control
+  // outputs.  Index i to index i, no reduction, for the same per-port reason as
+  // the two congestion vectors above.
+  // ---------------------------------------------------------------------------
+  // Width of the runtime XOFF-hold value.  24 bits ~= 52 ms at 322.265625 MHz,
+  // which bounds the damage if software writes nonsense to FC_MIN_XOFF.
+  localparam int FC_MIN_XOFF_W = 24;
+
+  wire     [NUM_CMAC_PORT-1:0] adap_fc_gen_en;
+  wire     [NUM_CMAC_PORT-1:0] adap_fc_react_en;
+  wire [FC_MIN_XOFF_W*NUM_CMAC_PORT-1:0] adap_fc_min_xoff_cycles;
+  wire     [NUM_CMAC_PORT-1:0] cmac_fc_xoff_active;
+  wire     [NUM_CMAC_PORT-1:0] cmac_fc_tx_pause_gate;
 
   wire                  [31:0] shell_rstn;
   wire                  [31:0] shell_rst_done;
@@ -931,11 +959,17 @@ module open_nic_shell #(
 
   generate for (genvar i = 0; i < NUM_CMAC_PORT; i++) begin: cmac_port
     packet_adapter #(
-      .CMAC_ID      (i),
-      .MIN_PKT_LEN  (MIN_PKT_LEN),
-      .MAX_PKT_LEN  (MAX_PKT_LEN),
-      .PKT_CAP      (PKT_CAP),
-      .FLOW_CTRL_EN (FLOW_CTRL_EN)
+      .CMAC_ID            (i),
+      .MIN_PKT_LEN        (MIN_PKT_LEN),
+      .MAX_PKT_LEN        (MAX_PKT_LEN),
+      .PKT_CAP            (PKT_CAP),
+      .FLOW_CTRL_EN       (FLOW_CTRL_EN),
+      // The reaction half has no watermarks of its own, but its runtime enable
+      // (FC_CTRL[1]) lives in this module's CSR, so the CSR and its CDC must
+      // exist whenever EITHER half is compiled in.
+      .FLOW_CTRL_REACT_EN (FLOW_CTRL_REACT_EN),
+      .FC_MIN_XOFF_CYCLES (FC_MIN_XOFF_CYCLES),
+      .FC_MIN_XOFF_W      (FC_MIN_XOFF_W)
     ) packet_adapter_inst (
       .s_axil_awvalid       (axil_adap_awvalid[i]),
       .s_axil_awaddr        (axil_adap_awaddr[`getvec(32, i)]),
@@ -992,6 +1026,14 @@ module open_nic_shell #(
       // Ch. 13 §13.4: this port's RX packet-buffer watermark, cmac_clk[i].
       .rx_buf_congested        (adap_rx_buf_congested[i]),
 
+      // Ch. 13 §13.12: runtime control plane, all cmac_clk[i].  Config out of
+      // the CSR, status back into it.
+      .fc_gen_en               (adap_fc_gen_en[i]),
+      .fc_react_en             (adap_fc_react_en[i]),
+      .fc_min_xoff_cycles      (adap_fc_min_xoff_cycles[`getvec(FC_MIN_XOFF_W, i)]),
+      .fc_xoff_active          (cmac_fc_xoff_active[i]),
+      .fc_tx_pause_gate        (cmac_fc_tx_pause_gate[i]),
+
       .mod_rstn             (adap_rstn[i]),
       .mod_rst_done         (adap_rst_done[i]),
 
@@ -1005,7 +1047,8 @@ module open_nic_shell #(
       .MIN_PKT_LEN        (MIN_PKT_LEN),
       .MAX_PKT_LEN        (MAX_PKT_LEN),
       .FLOW_CTRL_EN       (FLOW_CTRL_EN),
-      .FLOW_CTRL_REACT_EN (FLOW_CTRL_REACT_EN)
+      .FLOW_CTRL_REACT_EN (FLOW_CTRL_REACT_EN),
+      .FC_MIN_XOFF_W      (FC_MIN_XOFF_W)
     ) cmac_subsystem_inst (
       .s_axil_awvalid               (axil_cmac_awvalid[i]),
       .s_axil_awaddr                (axil_cmac_awaddr[`getvec(32, i)]),
@@ -1052,6 +1095,14 @@ module open_nic_shell #(
       // ---------------------------------------------------------------------
       .rx_buf_congested             (adap_rx_buf_congested[i]),
       .rx_fifo_congested_async      (box0_rx_fifo_congested[i]),
+
+      // Runtime control plane from packet_adapter[i]'s CSR (§13.12).  Effective
+      // enable is FLOW_CTRL_EN && fc_gen_en / FLOW_CTRL_REACT_EN && fc_react_en.
+      .fc_gen_en                    (adap_fc_gen_en[i]),
+      .fc_react_en                  (adap_fc_react_en[i]),
+      .fc_min_xoff_cycles           (adap_fc_min_xoff_cycles[`getvec(FC_MIN_XOFF_W, i)]),
+      .fc_xoff_active               (cmac_fc_xoff_active[i]),
+      .fc_tx_pause_gate             (cmac_fc_tx_pause_gate[i]),
 
 `ifdef __synthesis__
       .gt_rxp                       (qsfp_rxp[`getvec(4, i)]),

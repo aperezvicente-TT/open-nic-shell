@@ -36,8 +36,11 @@ module cmac_subsystem #(
   parameter int FC_PAUSE_PRIORITY  = 8,
   // stat_rx_pause_req bits we honour.  0x1FF = global pause + any PFC priority.
   parameter int FC_REACT_MASK      = 'h1FF,
-  // Minimum cmac_clk cycles to hold XOFF once asserted (anti-chatter).
-  parameter int FC_MIN_XOFF_CYCLES = 1024,
+  // Width of the runtime minimum-XOFF-hold input.  The VALUE is no longer a
+  // parameter: it comes from the packet_adapter CSR (FC_MIN_XOFF, 0x08C) so it
+  // can be swept without a 78-minute rebuild, and its reset default there
+  // (1024 cycles ~= 3.2 us) reproduces the old compile-time constant.
+  parameter int FC_MIN_XOFF_W     = 24,
   // Watchdog bound on how long a received pause may hold our TX off.  See the
   // long note in cmac_pause_control.sv: stat_rx_pause_req has never been
   // exercised on this bench, so an unbounded gate is not a risk worth taking.
@@ -100,6 +103,29 @@ module cmac_subsystem #(
   // downstream of the buffer above, so it fills first and is the early
   // warning).  Synchronised into cmac_clk inside cmac_pause_control.
   input  wire        rx_fifo_congested_async,
+
+  // ==========================================================================
+  // Runtime flow-control control plane (Ch. 13 §13.12 risk 5 / risk 6)
+  //
+  // The CSR that drives these lives in this port's packet_adapter
+  // (packet_adapter_register 0x080-0x098), not here — there is no register file
+  // in cmac_subsystem outside the encrypted CMAC IP's own AXI-Lite space, and
+  // the watermark that matters most (the adapter packet buffer) is the
+  // adapter's.  All five signals are cmac_clk: the config trio was crossed from
+  // axil_aclk by cdc_quasi_static_bus inside packet_adapter, and the two status
+  // bits are raw cmac_clk outputs of cmac_pause_control which packet_adapter's
+  // flow_ctrl_monitor crosses back.
+  //
+  // Effective enable is always (compile-time param) AND (runtime bit): with
+  // FLOW_CTRL_EN = 0 the generate branch in cmac_pause_control is absent, so
+  // `fc_gen_en` reaches nothing and no CSR write can make this port emit a
+  // pause frame.
+  // ==========================================================================
+  input  wire        fc_gen_en,
+  input  wire        fc_react_en,
+  input  wire [FC_MIN_XOFF_W-1:0] fc_min_xoff_cycles,
+  output wire        fc_xoff_active,
+  output wire        fc_tx_pause_gate,
 
 `ifdef __synthesis__
   input    [3:0] gt_rxp,
@@ -456,11 +482,15 @@ module cmac_subsystem #(
     .REACT_ENABLE     (FLOW_CTRL_REACT_EN),
     .PAUSE_PRIORITY   (FC_PAUSE_PRIORITY),
     .REACT_MASK       (FC_REACT_MASK),
-    .MIN_XOFF_CYCLES  (FC_MIN_XOFF_CYCLES),
+    .MIN_XOFF_W       (FC_MIN_XOFF_W),
     .REACT_MAX_CYCLES (FC_REACT_MAX_CYCLES)
   ) pause_control_inst (
     .cmac_clk            (cmac_clk),
     .cmac_rstn           (cmac_rstn),
+
+    .gen_en              (fc_gen_en),
+    .react_en            (fc_react_en),
+    .min_xoff_cycles     (fc_min_xoff_cycles),
 
     .congested_cmac_clk  (rx_buf_congested),
     .congested_async     (rx_fifo_congested_async),
@@ -470,8 +500,12 @@ module cmac_subsystem #(
     .ctl_tx_pause_req    (ctl_tx_pause_req),
     .ctl_tx_resend_pause (ctl_tx_resend_pause),
     .tx_pause_gate       (tx_pause_gate),
-    .xoff_active         ()
+    // Observability: no longer left dangling (§13.12 risk 6).  Counted in
+    // cmac_clk by flow_ctrl_monitor and read at FC_XOFF_EVENTS / FC_XOFF_CYCLES.
+    .xoff_active         (fc_xoff_active)
   );
+
+  assign fc_tx_pause_gate = tx_pause_gate;
 
   // Packet-atomic TX hold-off.  When FLOW_CTRL_REACT_EN = 0 the gate module is
   // still present but `pause` is a hard 1'b0, so `block` folds away to zero and

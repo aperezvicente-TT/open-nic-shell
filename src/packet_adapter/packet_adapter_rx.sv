@@ -26,14 +26,15 @@ module packet_adapter_rx #(
   // 0 => `rx_buf_congested` is tied low and none of the watermark logic is
   // instantiated, i.e. today's behaviour exactly.  Defaults OFF.
   parameter int  FLOW_CTRL_EN     = 0,
-  // Watermarks as right-shift amounts of the packet-buffer depth, so they are
-  // exact powers-of-two fractions and fold to constants at synthesis:
-  //   xoff = depth - (depth >> FC_XOFF_SHIFT)   (2 => assert at 3/4 full)
-  //   xon  = depth >> FC_XON_SHIFT              (1 => release at 1/2 full)
-  // This buffer is the LAST reservoir before packets are discarded, so it is
-  // deliberately watched late; the early warning comes from the plugin FIFO.
-  parameter int  FC_XOFF_SHIFT    = 2,
-  parameter int  FC_XON_SHIFT     = 1
+  // Depth of `pkt_buf_inst`'s packet RAM in beats.  Supplied by the caller
+  // rather than re-derived here: the formula lives in exactly one place
+  // (packet_adapter.sv C_PKT_BUF_DEPTH, mirroring
+  // axi_stream_packet_buffer.sv:91-92 C_RAM_ADDR_W/C_RAM_DEPTH) because the
+  // same number also has to become the CSR reset value in
+  // packet_adapter_register, and two copies of a $ceil/$clog2 expression that
+  // must agree is exactly how a watermark ends up silently mis-placed.
+  // Cross-checked against the buffer's own reported depth below.
+  parameter int  PKT_BUF_DEPTH    = 4096
 ) (
   input          s_axis_rx_tvalid,
   input  [511:0] s_axis_rx_tdata,
@@ -63,14 +64,25 @@ module packet_adapter_rx #(
   // domain as the CMAC's ctl_tx_pause_req, so no CDC is needed downstream.
   output         rx_buf_congested,
 
+  // ---- Runtime flow-control knobs, cmac_clk (Ch. 13 §13.12 risk 5) --------
+  // All three arrive from packet_adapter's cdc_quasi_static_bus, i.e. they are
+  // already in cmac_clk and already coherent.  See the CSR map in
+  // packet_adapter_register.v (0x080 FC_CTRL, 0x084 FC_XOFF_WM, 0x088
+  // FC_XON_WM).
+  input          fc_gen_en,
+  input   [15:0] fc_xoff_wm,
+  input   [15:0] fc_xon_wm,
+
+  // Occupancy tap for the CSR's FC_STATUS[31:16] and for the XOFF counters.
+  // cmac_clk.  Exported unconditionally: the packet buffer computes it either
+  // way, and when FLOW_CTRL_EN = 0 nothing downstream consumes it so it is
+  // trimmed away.
+  output  [15:0] fc_buf_fill,
+
   input          axis_aclk,
   input          cmac_clk,
   input          cmac_rstn
 );
-
-  // FIFO is large enough to fit in at least 1.5 largest packets
-  localparam C_FIFO_ADDR_W = $clog2(int'($ceil(real'(MAX_PKT_LEN * 8) / 512 * PKT_CAP)));
-  localparam C_FIFO_DEPTH  = 1 << C_FIFO_ADDR_W;
 
   // Synchronized to the CMAC clock `s_aclk`
   wire  [15:0] pkt_size;
@@ -248,19 +260,80 @@ module packet_adapter_rx #(
   // it can ask the sender to stop.  Its occupancy was computed internally and
   // thrown away until now.
   //
-  // This is the *last* reservoir before loss, so it is watched at 3/4 full and
-  // released at 1/2 (defaults).  With the shipped build parameters
-  // (-max_pkt_len 9600 -pkt_cap 16, script/build_eth_1pf_2cmac_qid.sh:56-57)
-  // C_RAM_ADDR_W = clog2(ceil(9600*8/512*16)) = clog2(2400) = 12, so depth is
-  // 4096 beats = 256 KB ~= 20 us of 100 G line rate; 1/4 of that is ~5 us of
-  // headroom for a pause frame to reach the sender and take effect.  Ample.
+  // This is the *last* reservoir before loss.  With the shipped build
+  // parameters (-max_pkt_len 9600 -pkt_cap 16,
+  // script/build_eth_1pf_2cmac_qid.sh:56-57) C_RAM_ADDR_W =
+  // clog2(ceil(9600*8/512*16)) = clog2(2400) = 12, so depth is 4096 beats =
+  // 256 KB ~= 20 us of 100 G line rate.
+  //
+  // The watermarks used to be compile-time fractions of that depth (3/4 assert,
+  // 1/2 release).  They are now CSR inputs, and the reason is a measurement:
+  // build 0x07291754 did emit 140 pause frames and the peer ConnectX-7 did
+  // receive all 140, but rx_global_pause_duration was only 6734 quanta =
+  // 34.5 us of pause in 12 s -- a 0.0003 % duty cycle, which is why the drop
+  // rate did not budge.  3/4-full is far too late and 1/2 releases far too
+  // fast, and at 78 minutes per rebuild those two numbers cannot be swept as
+  // parameters.  The CSR reset values are still exactly 3/4 and 1/2 (computed
+  // in packet_adapter.sv), so an unwritten CSR reproduces the old behaviour.
   //
   // cmac_clk domain throughout, so this reaches ctl_tx_pause_req without a CDC.
   // Per-CMAC by construction: there is one packet_adapter per CMAC.
   // ---------------------------------------------------------------------------
+  // Tied to 0 when the feature is compiled out so that nothing downstream can
+  // hold the occupancy path alive -- the inertness claim for FLOW_CTRL_EN = 0 is
+  // checked by comparing out-of-context cell counts against HEAD, and a live
+  // 16-bit output port would keep the zero-extension and the port itself.
+  assign fc_buf_fill = (FLOW_CTRL_EN != 0) ? pkt_buf_fill : 16'd0;
+
   generate if (FLOW_CTRL_EN != 0) begin: gen_flow_ctrl
-    wire [15:0] fc_xoff_lvl = pkt_buf_depth - (pkt_buf_depth >> FC_XOFF_SHIFT);
-    wire [15:0] fc_xon_lvl  = pkt_buf_depth >> FC_XON_SHIFT;
+    // -------------------------------------------------------------------------
+    // CLAMPING (§13.12 risk 7, now reachable from software rather than only
+    // from an absurd build parameter)
+    //
+    //   xoff_eff = clamp(fc_xoff_wm, 2, pkt_buf_depth)
+    //   xon_eff  = min(fc_xon_wm, xoff_eff - 1)
+    //
+    // Why those bounds:
+    //   * xoff >= 2 is the one that matters.  xoff == 0 makes
+    //     `fill >= xoff_lvl` true unconditionally in fifo_fill_hysteresis, so
+    //     `congested` would latch high forever and pause the peer permanently
+    //     with no way back short of a reload.  >= 2 rather than >= 1 also
+    //     guarantees a non-empty band exists below it.
+    //   * xoff <= depth: above the depth the trigger is simply unreachable and
+    //     the feature quietly does nothing.  Clamping to depth turns "I typed
+    //     too big a number" into "pause at completely full", which is at least
+    //     the documented worst case rather than a silent no-op.
+    //   * xon < xoff always, so there is always a level the fill can fall to
+    //     that releases XOFF.  This makes XON >= XOFF harmless instead of
+    //     "hysteresis band vanished".
+    //
+    // The comparisons are registered so the 322 MHz path into
+    // fifo_fill_hysteresis sees plain flop outputs; these values are quasi-
+    // static (they only change on a CSR write) so the extra cycle of latency is
+    // free.  Reset value 16'hFFFF is deliberately the "never congested" corner:
+    // xoff = 0xFFFF is unreachable and xon = 0xFFFF releases, so for the one
+    // cycle before the real values land we cannot emit a spurious XOFF.
+    // -------------------------------------------------------------------------
+    wire [15:0] xoff_capped = (fc_xoff_wm > pkt_buf_depth) ? pkt_buf_depth : fc_xoff_wm;
+    wire [15:0] xoff_clamped = (xoff_capped < 16'd2) ? 16'd2 : xoff_capped;
+    wire [15:0] xon_clamped  = (fc_xon_wm >= xoff_clamped) ? (xoff_clamped - 16'd1)
+                                                           : fc_xon_wm;
+
+    reg [15:0] fc_xoff_lvl;
+    reg [15:0] fc_xon_lvl;
+
+    always @(posedge cmac_clk) begin
+      if (~cmac_rstn) begin
+        fc_xoff_lvl <= 16'hFFFF;
+        fc_xon_lvl  <= 16'hFFFF;
+      end
+      else begin
+        fc_xoff_lvl <= xoff_clamped;
+        fc_xon_lvl  <= xon_clamped;
+      end
+    end
+
+    wire fc_congested;
 
     fifo_fill_hysteresis #(
       .CNT_W (16)
@@ -270,8 +343,29 @@ module packet_adapter_rx #(
       .fill      (pkt_buf_fill),
       .xoff_lvl  (fc_xoff_lvl),
       .xon_lvl   (fc_xon_lvl),
-      .congested (rx_buf_congested)
+      .congested (fc_congested)
     );
+
+    // Runtime master enable (FC_CTRL[0]).  ANDed here as well as inside
+    // cmac_pause_control so that the *source* goes quiet too -- otherwise the
+    // XOFF counters in flow_ctrl_monitor would keep reporting congestion for a
+    // feature software has switched off.
+    assign rx_buf_congested = fc_congested && fc_gen_en;
+
+`ifndef __synthesis__
+    // The depth formula is duplicated between axi_stream_packet_buffer (which
+    // owns the RAM) and packet_adapter (which owns the CSR reset value).  They
+    // must agree or every watermark default is wrong.  Catch a divergence the
+    // first cycle out of reset rather than three months later on hardware.
+    initial begin
+      @(posedge cmac_rstn);
+      @(posedge cmac_clk);
+      if (pkt_buf_depth !== 16'(PKT_BUF_DEPTH)) begin
+        $fatal(1, "[%m] PKT_BUF_DEPTH parameter (%0d) disagrees with the packet buffer's reported depth (%0d)",
+               PKT_BUF_DEPTH, pkt_buf_depth);
+      end
+    end
+`endif
   end
   else begin: gen_no_flow_ctrl
     assign rx_buf_congested = 1'b0;

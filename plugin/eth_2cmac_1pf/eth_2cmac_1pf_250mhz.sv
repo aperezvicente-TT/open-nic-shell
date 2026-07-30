@@ -64,12 +64,21 @@ module eth_2cmac_1pf_250mhz #(
   // bitstream built now behaves exactly as it does today.
   // ==========================================================================
   parameter int FLOW_CTRL_EN  = 0,
-  // Watermarks as right-shift amounts of ARB_FIFO_DEPTH.  Defaults:
+  // RESET VALUES of the runtime watermarks, as right-shift amounts of
+  // ARB_FIFO_DEPTH:
   //   xoff = depth >> 1  = 256 beats (half full)
   //   xon  = depth >> 3  =  64 beats (one eighth)
   // Wide band on purpose: this FIFO is the early-warning reservoir, and a
   // 192-beat drain gap is ~12 KB, i.e. many microseconds of hysteresis rather
   // than a per-beat flap.
+  //
+  // These are only the reset state now -- the live values come from the plugin's
+  // own diag CSR (rdma_diag_csr 0x048/0x04C per port; see the register map in
+  // that file's header).  Reason: build 0x07291754 emitted 140 pause frames that
+  // the peer ConnectX-7 confirmed receiving, but rx_global_pause_duration was
+  // 6734 quanta = 34.5 us in 12 s, a 0.0003 % duty cycle -- these two numbers
+  // are almost certainly wrong and cost 78 minutes each to change as
+  // parameters.
   parameter int FC_XOFF_SHIFT = 1,
   parameter int FC_XON_SHIFT  = 3
 ) (
@@ -175,6 +184,12 @@ module eth_2cmac_1pf_250mhz #(
   // part-select when NUM_INTF==1.
   localparam int SEL_W           = (NUM_INTF > 1) ? $clog2(NUM_INTF) : 1;
 
+  // Depth of the per-CMAC RX packet FIFO, in beats.  Declared here rather than
+  // beside the FIFO instance further down because the diag CSR (instantiated
+  // above it) needs it to derive the flow-control watermark reset values and to
+  // report the depth at offset 0x078.
+  localparam int ARB_FIFO_DEPTH  = 512;
+
   // =========================================================================
   // Reset
   // =========================================================================
@@ -212,10 +227,28 @@ module eth_2cmac_1pf_250mhz #(
   // measured the (now removed) classifier/filter stages are tied to 0.
   wire [17:0] diag_cnt_inc;
 
+  // Runtime flow-control watermarks for the per-CMAC arb_in_pkt_fifo taps, and
+  // the fill/state they report back.  ALL axis_aclk: the diag CSR's register
+  // file already runs on dp_aclk = axis_aclk, and this FIFO plus its hysteresis
+  // are axis_aclk too, so this whole loop is single-domain and needs no CDC.
+  // (The AXI-Lite -> axis_aclk crossing happens once, inside the CSR's
+  // `independent_clock` axi_lite_register.)
+  wire [16*NUM_INTF-1:0] fc_wm_xoff;
+  wire [16*NUM_INTF-1:0] fc_wm_xon;
+  wire [16*NUM_INTF-1:0] fc_fill_bus;
+  wire    [NUM_INTF-1:0] fc_congested_bus;
+
   generate if (NUM_QDMA <= 1) begin : gen_diag_csr
     rdma_diag_csr #(
-      .REG_ADDR_W   (12),
-      .NUM_COUNTERS (18)
+      .REG_ADDR_W    (12),
+      .NUM_COUNTERS  (18),
+      // Flow-control watermark registers exist only when the feature is
+      // compiled in, so a FLOW_CTRL_EN = 0 bitstream is bit-for-bit as before.
+      .FC_ENABLE     (FLOW_CTRL_EN),
+      .FC_NUM_PORTS  (NUM_INTF),
+      .FC_FIFO_DEPTH (ARB_FIFO_DEPTH),
+      .FC_XOFF_RST   (ARB_FIFO_DEPTH >> FC_XOFF_SHIFT),
+      .FC_XON_RST    (ARB_FIFO_DEPTH >> FC_XON_SHIFT)
     ) reg_inst (
       .s_axil_awvalid (s_axil_awvalid),
       .s_axil_awaddr  (s_axil_awaddr),
@@ -238,8 +271,22 @@ module eth_2cmac_1pf_250mhz #(
       .aresetn        (axil_aresetn),
       .dp_aclk        (axis_aclk),
       .dp_aresetn     (axis_aresetn),
-      .cnt_inc        (diag_cnt_inc)
+      .cnt_inc        (diag_cnt_inc),
+
+      .fc_xoff_wm     (fc_wm_xoff),
+      .fc_xon_wm      (fc_wm_xon),
+      .fc_fill        (fc_fill_bus),
+      .fc_congested   (fc_congested_bus)
     );
+  end
+  else begin : gen_no_diag_csr
+    // NUM_QDMA > 1 has no register slave here, so there is nowhere for the
+    // runtime watermarks to come from.  Fall back to the compile-time constants
+    // rather than leaving the nets undriven.
+    for (genvar c = 0; c < NUM_INTF; c++) begin : gen_fc_wm_const
+      assign fc_wm_xoff[16*c +: 16] = 16'(ARB_FIFO_DEPTH >> FC_XOFF_SHIFT);
+      assign fc_wm_xon [16*c +: 16] = 16'(ARB_FIFO_DEPTH >> FC_XON_SHIFT);
+    end
   end
   endgenerate
 
@@ -357,7 +404,8 @@ module eth_2cmac_1pf_250mhz #(
   //                      grant-keyed constant; this fixed a real dual-CMAC
   //                      qid-misroute bug).
   // =========================================================================
-  localparam int ARB_FIFO_DEPTH = 512;
+  // ARB_FIFO_DEPTH is declared with the other local parameters at the top of the
+  // module; the diag CSR instance above needs it.
   localparam int ARB_TUSER_W    = 123;  // {qid[10:0], ptp_ts[79:0], src[15:0], size[15:0]}
 
   // Per-CMAC FIFO egress (arbiter input) buses.
@@ -453,9 +501,7 @@ module eth_2cmac_1pf_250mhz #(
     // a single up/down counter is exact — no CDC, no skew.
     // -----------------------------------------------------------------------
     if (FLOW_CTRL_EN != 0) begin: gen_fc_tap
-      localparam int FC_CNT_W  = $clog2(ARB_FIFO_DEPTH) + 1;
-      localparam [FC_CNT_W-1:0] FC_XOFF_LVL = ARB_FIFO_DEPTH >> FC_XOFF_SHIFT;
-      localparam [FC_CNT_W-1:0] FC_XON_LVL  = ARB_FIFO_DEPTH >> FC_XON_SHIFT;
+      localparam int FC_CNT_W = $clog2(ARB_FIFO_DEPTH) + 1;
 
       reg [FC_CNT_W-1:0] fc_fill;
 
@@ -474,20 +520,79 @@ module eth_2cmac_1pf_250mhz #(
         end
       end
 
+      // ---------------------------------------------------------------------
+      // Runtime watermarks from the diag CSR (0x048 + 8*c / 0x04C + 8*c), with
+      // the same clamping rule as the adapter side:
+      //
+      //   xoff_eff = clamp(csr_xoff, 2, ARB_FIFO_DEPTH)
+      //   xon_eff  = min(csr_xon, xoff_eff - 1)
+      //
+      // xoff == 0 is the only genuinely dangerous value: `fill >= xoff_lvl`
+      // would be true unconditionally in fifo_fill_hysteresis, latching
+      // rx_fifo_congested high forever and pausing this port's peer with no way
+      // back short of a bitstream reload.  xoff above the depth is merely
+      // unreachable, and xon >= xoff merely removes the hysteresis band; both
+      // are clamped so software cannot produce them either.
+      //
+      // Registered so the hysteresis comparators still see plain flop outputs.
+      // Reset value 16'hFFFF is the "never congested" corner (xoff unreachable,
+      // xon always satisfied), so the cycle before the CSR value lands cannot
+      // produce a spurious XOFF.
+      // ---------------------------------------------------------------------
+      wire [15:0] csr_xoff = fc_wm_xoff[16*c +: 16];
+      wire [15:0] csr_xon  = fc_wm_xon [16*c +: 16];
+
+      wire [15:0] xoff_capped  = (csr_xoff > 16'(ARB_FIFO_DEPTH)) ? 16'(ARB_FIFO_DEPTH)
+                                                                 : csr_xoff;
+      wire [15:0] xoff_clamped = (xoff_capped < 16'd2) ? 16'd2 : xoff_capped;
+      wire [15:0] xon_clamped  = (csr_xon >= xoff_clamped) ? (xoff_clamped - 16'd1)
+                                                           : csr_xon;
+
+      reg [FC_CNT_W-1:0] fc_xoff_lvl;
+      reg [FC_CNT_W-1:0] fc_xon_lvl;
+
+      always @(posedge axis_aclk) begin
+        if (~axis_aresetn) begin
+          fc_xoff_lvl <= {FC_CNT_W{1'b1}};
+          fc_xon_lvl  <= {FC_CNT_W{1'b1}};
+        end
+        else begin
+          fc_xoff_lvl <= xoff_clamped[FC_CNT_W-1:0];
+          fc_xon_lvl  <= xon_clamped[FC_CNT_W-1:0];
+        end
+      end
+
       fifo_fill_hysteresis #(
         .CNT_W (FC_CNT_W)
       ) fc_hyst_inst (
         .clk       (axis_aclk),
         .rstn      (axis_aresetn),
         .fill      (fc_fill),
-        .xoff_lvl  (FC_XOFF_LVL),
-        .xon_lvl   (FC_XON_LVL),
+        .xoff_lvl  (fc_xoff_lvl),
+        .xon_lvl   (fc_xon_lvl),
         .congested (rx_fifo_congested[c])
       );
+
+      // Observability back to the CSR (0x068 + 4*c).  Without this there is no
+      // way to tell whether a watermark write did anything: the fill could be
+      // sitting at 20 beats and no watermark would ever fire.
+      assign fc_fill_bus[16*c +: 16] = {{(16-FC_CNT_W){1'b0}}, fc_fill};
+      assign fc_congested_bus[c]     = rx_fifo_congested[c];
+
+      // No separate runtime enable here on purpose: the single consumer of
+      // rx_fifo_congested is cmac_pause_control, whose runtime enable is
+      // FC_CTRL[0] in the packet_adapter CSR.  Switching that off silences this
+      // source too.  To disable ONLY the early warning while keeping the
+      // last-resort adapter watermark, write 0xFFFF to this port's FC_XOFF_WM:
+      // the clamp caps it at ARB_FIFO_DEPTH, so the early warning then only
+      // fires when this FIFO is completely full -- by which time the adapter
+      // buffer upstream has long since tripped anyway.
     end
     else begin: gen_no_fc_tap
       // Today's behaviour: the fill level is measured by nobody.
-      assign rx_fifo_congested[c] = 1'b0;
+      assign rx_fifo_congested[c]    = 1'b0;
+      assign fc_fill_bus[16*c +: 16] = 16'd0;
+      assign fc_congested_bus[c]     = 1'b0;
     end
   end
   endgenerate

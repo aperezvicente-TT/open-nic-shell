@@ -135,6 +135,17 @@ set src_dir ${root_dir}/src
 #   num_qdma      Number of QDMA interfaces (1 to 2)
 #   num_queue        Number of QDMA queues (1 to 2048)
 #   num_cmac_port    Number of CMAC ports (1 or 2)
+#   flow_ctrl_en       Pause GENERATION: per-CMAC RX fill drives that CMAC's
+#                      ctl_tx_pause_req, so receive overload backpressures the
+#                      sender instead of discarding (docs Ch. 13 §13.4).  0 = the
+#                      historical behaviour, and verified to synthesise to zero
+#                      logic.
+#   flow_ctrl_react_en Pause REACTION: honour a pause frame the peer sends us
+#                      (docs Ch. 13 §13.3.1).  Enable SEPARATELY from
+#                      flow_ctrl_en and test alone: the path is unexercised and
+#                      this CMAC config exposes no ctl_rx_pause_ack, so a
+#                      latching level would stall that port's TX until the
+#                      watchdog fires.
 #
 # Simulation parameters
 #   sim_exec_path  Path to directory containing simulator executable
@@ -172,6 +183,8 @@ array set design_params {
     -num_qdma         1
     -num_queue        512
     -num_cmac_port    1
+    -flow_ctrl_en       0
+    -flow_ctrl_react_en 0
 }
 set design_params(-build_timestamp) [clock format [clock seconds] -format %m%d%H%M]
 

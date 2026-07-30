@@ -39,6 +39,21 @@
 // Deliberately shallow -- two magnitude compares feeding one flop -- because on
 // the RX path one instance of this sits in the 322 MHz cmac_clk domain.
 //
+// DEGENERATE INPUTS ARE THE CALLER'S PROBLEM  (2026-07-29, §13.12 risk 7)
+// Now that the watermarks are runtime-writable over a CSR, software can present
+// nonsense.  There is exactly one value that is unrecoverable here:
+// `xoff_lvl == 0` makes `fill >= xoff_lvl` true unconditionally, so `congested`
+// latches high forever and the port pauses its peer permanently.  `xon_lvl >=
+// xoff_lvl` merely removes the hysteresis band (xoff is tested first, so xoff
+// wins) and `xoff_lvl > depth` merely means the trigger is unreachable -- both
+// are useless but neither deadlocks.
+//
+// This module deliberately does NOT clamp: it has no idea what the FIFO depth
+// is, and inventing a limit here would silently disagree with the caller's.
+// Both callers clamp on their side, against the depth they actually own:
+// packet_adapter_rx.sv (xoff into [2, depth], xon into [0, xoff-1]) and
+// eth_2cmac_1pf_250mhz.sv (same rule against ARB_FIFO_DEPTH).
+//
 // *************************************************************************
 `timescale 1ns/1ps
 module fifo_fill_hysteresis #(
