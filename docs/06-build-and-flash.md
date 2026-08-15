@@ -130,7 +130,19 @@ host, cap `-jobs` accordingly.
 (1), `-impl` (0), `-post_impl` (0), `-user_plugin` (`plugin/p2p`), `-num_phys_func` (1),
 `-num_qdma` (1), `-num_queue` (512), `-num_cmac_port` (1), `-min_pkt_len` (64),
 `-max_pkt_len` (1518), `-pkt_cap` (64), `-bitstream_userid` (0xDEADC0DE),
-`-bitstream_usr_access` (0x66669999).
+`-bitstream_usr_access` (0x66669999), `-pcie_gen4x8` (0).
+
+**Other board targets.** Two boards have their own wrapper and design note,
+because their PCIe geometry differs from the au200/au250 default:
+
+| Board | Wrapper | Note |
+|---|---|---|
+| Alveo U50 — 1 CMAC / 1 PF, Gen4 x8 | `script/build_au50_1cmac_1pf_gen4x8.sh` | [`au50-1cmac-1pf-gen4x8.md`](au50-1cmac-1pf-gen4x8.md) |
+| Varium C1100 — 2 CMAC / 2 QDMA, Gen4 x8 | `script/build_au55n_2qdma_2cmac.sh` | [`au55n-2qdma-gen4x8-design.md`](au55n-2qdma-gen4x8-design.md) |
+
+`-pcie_gen4x8 1` is the U50-only switch that retrains its endpoint from the
+board-default Gen3 x16 to Gen4 x8 on edge lanes 0–7 (same 128 Gb/s raw). It is
+rejected on any other board.
 
 ## 6.4 How the plugin gets into the build
 

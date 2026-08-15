@@ -80,6 +80,13 @@ module qdma_subsystem #(
   input                    [7:0] pcie_rxn,
   output                   [7:0] pcie_txp,
   output                   [7:0] pcie_txn,
+`elsif __au50_gen4x8__
+  // U50 at Gen4 x8: the single endpoint is configured X8 (a PCIE4C block does
+  // x16 only at Gen3), so its pci_exp_* ports are likewise 8 bits wide.
+  input                    [7:0] pcie_rxp,
+  input                    [7:0] pcie_rxn,
+  output                   [7:0] pcie_txp,
+  output                   [7:0] pcie_txn,
 `else
   input                   [15:0] pcie_rxp,
   input                   [15:0] pcie_rxn,

@@ -31,6 +31,14 @@ module qdma_subsystem_qdma_wrapper #(
   input    [7:0] pcie_rxn,
   output   [7:0] pcie_txp,
   output   [7:0] pcie_txn,
+`elsif __au50_gen4x8__
+  // U50 Gen4 x8: a single X8 endpoint (QDMA_ID == 0 always on this board), so
+  // the QDMA_ID==0 branch below connects this 8-bit port whole -- the same
+  // shape as the C1100 case above, reached because Gen4 caps a PCIE4C at x8.
+  input    [7:0] pcie_rxp,
+  input    [7:0] pcie_rxn,
+  output   [7:0] pcie_txp,
+  output   [7:0] pcie_txn,
 `else
   input   [15:0] pcie_rxp,
   input   [15:0] pcie_rxn,

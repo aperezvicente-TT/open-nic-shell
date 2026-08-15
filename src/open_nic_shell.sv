@@ -122,6 +122,17 @@ module open_nic_shell #(
   input      [8*NUM_QDMA-1:0] pcie_rxn,
   output     [8*NUM_QDMA-1:0] pcie_txp,
   output     [8*NUM_QDMA-1:0] pcie_txn,
+`elsif __au50_gen4x8__
+// U50 at Gen4 x8: a PCIE4C block does x16 only at Gen3, so Gen4 costs half the
+// lanes.  The endpoint takes edge lanes 0..7 (GTY quads X1Y0/X1Y1, refclk
+// PCIE_REFCLK1 = AF9/AF8 in X1Y1) and lanes 8..15 are left unconnected.  Raw
+// bandwidth is unchanged at 128 Gb/s, so nothing downstream of the endpoint
+// resizes.  NUM_QDMA is 1 on this board; the multiply keeps the shape of the
+// other branches.  See docs/au50-1cmac-1pf-gen4x8.md.
+  input      [8*NUM_QDMA-1:0] pcie_rxp,
+  input      [8*NUM_QDMA-1:0] pcie_rxn,
+  output     [8*NUM_QDMA-1:0] pcie_txp,
+  output     [8*NUM_QDMA-1:0] pcie_txn,
 `else
   input     [16*NUM_QDMA-1:0] pcie_rxp,
   input     [16*NUM_QDMA-1:0] pcie_rxn,
@@ -260,6 +271,14 @@ module open_nic_shell #(
 `ifdef __synthesis__
 
 `ifdef __au55n_dual_x8__
+  wire  [8*NUM_QDMA-1:0] qdma_pcie_rxp;
+  wire  [8*NUM_QDMA-1:0] qdma_pcie_rxn;
+  wire  [8*NUM_QDMA-1:0] qdma_pcie_txp;
+  wire  [8*NUM_QDMA-1:0] qdma_pcie_txn;
+`elsif __au50_gen4x8__
+  // U50 Gen4 x8: one endpoint, 8 lanes.  Same width as the C1100 branch above,
+  // but reached for a different reason (Gen4 caps a PCIE4C at x8, rather than
+  // the connector being split), so it is spelled out separately.
   wire  [8*NUM_QDMA-1:0] qdma_pcie_rxp;
   wire  [8*NUM_QDMA-1:0] qdma_pcie_rxn;
   wire  [8*NUM_QDMA-1:0] qdma_pcie_txp;
@@ -918,6 +937,11 @@ module open_nic_shell #(
 
   `ifdef __synthesis__
     `ifdef __au55n_dual_x8__
+      .pcie_rxp                             (qdma_pcie_rxp[`getvec(8, i)]),
+      .pcie_rxn                             (qdma_pcie_rxn[`getvec(8, i)]),
+      .pcie_txp                             (qdma_pcie_txp[`getvec(8, i)]),
+      .pcie_txn                             (qdma_pcie_txn[`getvec(8, i)]),
+    `elsif __au50_gen4x8__
       .pcie_rxp                             (qdma_pcie_rxp[`getvec(8, i)]),
       .pcie_rxn                             (qdma_pcie_rxn[`getvec(8, i)]),
       .pcie_txp                             (qdma_pcie_txp[`getvec(8, i)]),

@@ -120,6 +120,15 @@ set src_dir ${root_dir}/src
 #                          them concurrently (-jobs), so a strategy sweep costs
 #                          little extra wall clock on a many-core host.  Note each
 #                          concurrent run needs its own ~20-30 GB of RAM.
+#   pcie_gen4x8            Build the QDMA endpoint as Gen4 x8 (edge lanes 0-7)
+#                          instead of the board default Gen3 x16.  Same raw
+#                          bandwidth (128 Gb/s), half the lanes, so it is the
+#                          right choice in a slot bifurcated x8x8 or one that
+#                          only trains 8 lanes.  au50 only for now: the board
+#                          file must define a pci_express_x8 interface whose
+#                          refclk is within 2 GT quads of lanes 0-7, and the
+#                          shell must narrow pcie_rxp/txp under the matching
+#                          macro.  Emits `__au50_gen4x8__`.
 #   post_impl              Perform post implementation actions
 #   user_plugin            Path to the user plugin repo
 #   bitstream_userid       Bitstream.config userid
@@ -169,6 +178,7 @@ array set build_options {
     -user_plugin ""
     -bitstream_userid  "0xDEADC0DE"
     -bitstream_usr_access "0x66669999"
+    -pcie_gen4x8 0
     -sim  0
 }
 set build_options(-user_plugin) ${plugin_dir}/p2p
@@ -245,6 +255,14 @@ if {$use_phys_func == 1} {
 }
 if {$num_cmac_port != 1 && $num_cmac_port != 2} {
     puts "Invalid value for -num_cmac_port: allowed values are 1 and 2"
+    exit
+}
+# -pcie_gen4x8 needs three things per board: a pci_express_x8 board interface,
+# a refclk legal for lanes 0-7, and a shell macro that narrows pcie_rxp/txp.
+# Only au50 has all three today, so refuse anywhere else rather than build a
+# 16-lane top level against an 8-lane endpoint.
+if {$pcie_gen4x8 && $board ne "au50"} {
+    puts "Invalid value for -pcie_gen4x8: only supported on -board au50 (got $board)"
     exit
 }
 
@@ -469,6 +487,13 @@ if {$zynq_family} {
 # build can see it.  See docs/au55n-2qdma-gen4x8-design.md.
 if {$board eq "au55n" && $num_qdma == 2} {
     append verilog_define " " "__au55n_dual_x8__"
+}
+# au50 / Alveo U50 Gen4 x8: one QDMA endpoint on edge lanes 0..7 only, so the
+# lane budget is 8 rather than 16.  Same 128 Gb/s as the stock Gen3 x16 build.
+# Gated on board AND the option, so the default Gen3 x16 au50 target is
+# untouched.  See docs/au50-1cmac-1pf-gen4x8.md.
+if {$board eq "au50" && $pcie_gen4x8} {
+    append verilog_define " " "__au50_gen4x8__"
 }
 set_property verilog_define $verilog_define [current_fileset]
 
