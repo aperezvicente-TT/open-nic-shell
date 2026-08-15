@@ -42,6 +42,19 @@ set_property -dict {PACKAGE_PIN AM20 IOSTANDARD LVCMOS12}         [get_ports sat
 set_property -dict {PACKAGE_PIN AM21 IOSTANDARD LVCMOS12}         [get_ports satellite_gpio[2]]
 set_property -dict {PACKAGE_PIN AN21 IOSTANDARD LVCMOS12}         [get_ports satellite_gpio[3]]
 
+# Board LEDs
+# LED[0] Red    - Heartbeat (bitstream alive)
+# LED[1] Yellow - QSFP1 link/activity
+# LED[2] Green  - QSFP0 link/activity
+set_property PACKAGE_PIN BC21 [get_ports {gpio_led[0]}]
+set_property PACKAGE_PIN BB21 [get_ports {gpio_led[1]}]
+set_property PACKAGE_PIN BA20 [get_ports {gpio_led[2]}]
+set_property IOSTANDARD LVCMOS12 [get_ports {gpio_led[0]}]
+set_property IOSTANDARD LVCMOS12 [get_ports {gpio_led[1]}]
+set_property IOSTANDARD LVCMOS12 [get_ports {gpio_led[2]}]
+set_property SLEW SLOW [get_ports {gpio_led[*]}]
+set_property DRIVE 8   [get_ports {gpio_led[*]}]
+set_false_path -to [get_ports {gpio_led[*]}]
 
 # QSFP Control Signals
 #       RESETL  - Active Low Reset output from FPGA to QSFP Module

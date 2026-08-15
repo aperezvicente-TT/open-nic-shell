@@ -462,6 +462,14 @@ set verilog_define "__synthesis__ __${board}__"
 if {$zynq_family} {
     append verilog_define " " "__zynq_family__"
 }
+# au55n / Varium C1100 bifurcated x8x8: two QDMA endpoints on ONE x16 edge
+# connector, so the lane budget is 8 per endpoint (not 16) and the single PERST
+# pin is shared.  That shape differs from every other target, hence its own
+# macro.  Gated on board AND num_qdma, so no other board and no 1-QDMA au55n
+# build can see it.  See docs/au55n-2qdma-gen4x8-design.md.
+if {$board eq "au55n" && $num_qdma == 2} {
+    append verilog_define " " "__au55n_dual_x8__"
+}
 set_property verilog_define $verilog_define [current_fileset]
 
 # Read IPs from finished IP runs

@@ -22,10 +22,21 @@
 module qdma_subsystem_qdma_wrapper #(
   parameter integer QDMA_ID = 0
 ) (
+`ifdef __au55n_dual_x8__
+  // Bifurcated x8x8 (C1100): both endpoints are X8, so this is 8 bits wide and
+  // BOTH generate branches below connect it whole -- the QDMA_ID==0 branch
+  // connects `pcie_rxp` directly (was a 16-lane assumption) and the QDMA_ID!=0
+  // branch's `getvec(8, 0)` slice is the entire port.
+  input    [7:0] pcie_rxp,
+  input    [7:0] pcie_rxn,
+  output   [7:0] pcie_txp,
+  output   [7:0] pcie_txn,
+`else
   input   [15:0] pcie_rxp,
   input   [15:0] pcie_rxn,
   output  [15:0] pcie_txp,
   output  [15:0] pcie_txn,
+`endif
 
   output         m_axil_awvalid,
   output  [31:0] m_axil_awaddr,

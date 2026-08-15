@@ -280,7 +280,23 @@ module qdma_subsystem_function #(
     assign m_axis_h2c_tuser_qid  = h2c_slice_tuser_out[26:16];
   end
   else begin
-    qdma_subsystem_clk_converter h2c_axis_inst(
+    // Same byte-locked packing as the QDMA_ID == 0 slice above, but carried
+    // across the clock domain crossing: TUSER = {qid[10:0], size[15:0]} = 27b.
+    //
+    // A clock converter (not a register slice) is required here.  Each QDMA
+    // instance produces its own 250 MHz axis_aclk from its own PCIe core, so
+    // instance != 0 has to cross into the master instance's domain.  The two
+    // clocks are not phase-related even when both PCIe refclks come from the
+    // same board oscillator, because each core has its own MMCM.
+    //
+    // This replaces the qid side-FIFO that used to sit beside a 16-bit-TUSER
+    // converter.  That FIFO was written on the first beat of a packet and read
+    // on tlast of the *output* packet, so the two pointers drifted apart by one
+    // packet at boundaries and the qid emitted with a packet could belong to
+    // its predecessor -- misrouting CMAC0 traffic (qid < 64) to CMAC1.
+    wire [26:0] h2c_cc_tuser_out;
+
+    qdma_subsystem_clk_converter_h2c h2c_axis_inst(
       .s_axis_aresetn (axil_aresetn),
       .m_axis_aresetn (axil_aresetn),
       .s_axis_aclk    (axis_aclk),
@@ -289,79 +305,33 @@ module qdma_subsystem_function #(
       .s_axis_tdata   (axis_h2c_tdata),
       .s_axis_tkeep   (axis_h2c_tkeep),
       .s_axis_tlast   (axis_h2c_tlast),
-      .s_axis_tuser   (axis_h2c_tuser_size),
+      .s_axis_tuser   ({s_axis_h2c_tuser_qid, axis_h2c_tuser_size}),
       .m_axis_aclk    (axis_master_aclk),
       .m_axis_tvalid  (m_axis_h2c_tvalid),
       .m_axis_tready  (m_axis_h2c_tready),
       .m_axis_tdata   (m_axis_h2c_tdata),
       .m_axis_tkeep   (m_axis_h2c_tkeep),
       .m_axis_tlast   (m_axis_h2c_tlast),
-      .m_axis_tuser   (m_axis_h2c_tuser_size)
+      .m_axis_tuser   (h2c_cc_tuser_out)
     );
+
+    assign m_axis_h2c_tuser_size = h2c_cc_tuser_out[15:0];
+    assign m_axis_h2c_tuser_qid  = h2c_cc_tuser_out[26:16];
   end
   endgenerate
 
-  // ----- H2C qid side-FIFO (QDMA_ID!=0 ONLY) -----------------------------
-  // RACY legacy path, retained only for the multi-QDMA (QDMA_ID!=0) build
-  // whose clk_converter TUSER is not widened.  The au200 1PF/2CMAC target is
-  // QDMA_ID==0 and uses the byte-locked slice above instead.  Do NOT use this
-  // for QDMA_ID==0 — the empty-fallback (below) skews qid by one packet at
-  // boundaries and misroutes CMAC0 traffic to CMAC1.
-  generate if (QDMA_ID != 0) begin : gen_h2c_qid_sidefifo
-  reg s_h2c_in_pkt;
-  always @(posedge axis_aclk) begin
-    if (~axil_aresetn) s_h2c_in_pkt <= 1'b0;
-    else if (s_axis_h2c_tvalid && s_axis_h2c_tready) begin
-      if (s_axis_h2c_tlast) s_h2c_in_pkt <= 1'b0;
-      else                   s_h2c_in_pkt <= 1'b1;
-    end
-  end
-  wire h2c_qid_wr = s_axis_h2c_tvalid && s_axis_h2c_tready && ~s_h2c_in_pkt;
-  wire h2c_qid_rd = m_axis_h2c_tvalid && m_axis_h2c_tready && m_axis_h2c_tlast;
-  wire [10:0] h2c_qid_dout;
-  wire        h2c_qid_empty;
+  // ----- H2C qid side-FIFO: REMOVED --------------------------------------
+  // The QDMA_ID != 0 path used to carry the qid in an xpm_fifo_sync beside a
+  // 16-bit-TUSER clock converter, with an "empty -> use the pre-converter
+  // value" fallback.  Written on a packet's first beat and read on the output
+  // packet's tlast, the two pointers drifted by one packet at boundaries, so a
+  // packet could be emitted with its predecessor's qid -- silently misrouting
+  // CMAC0 traffic (qid < 64) to CMAC1 under sustained load.
+  //
+  // Both QDMA_ID paths now carry the qid inside TUSER, byte-locked to the data
+  // beat, so no side-channel and no fallback exist to drift.
+  // -----------------------------------------------------------------------
 
-  xpm_fifo_sync #(
-    .DOUT_RESET_VALUE    ("0"),
-    .ECC_MODE            ("no_ecc"),
-    .FIFO_MEMORY_TYPE    ("distributed"),
-    .FIFO_WRITE_DEPTH    (16),
-    .READ_DATA_WIDTH     (11),
-    .READ_MODE           ("fwft"),
-    .WRITE_DATA_WIDTH    (11)
-  ) h2c_qid_fifo (
-    .wr_en         (h2c_qid_wr),
-    .din           (s_axis_h2c_tuser_qid),
-    .rd_en         (h2c_qid_rd),
-    .dout          (h2c_qid_dout),
-    .empty         (h2c_qid_empty),
-    .full          (),
-    .wr_ack        (),
-    .data_valid    (),
-    .wr_data_count (),
-    .rd_data_count (),
-    .almost_empty  (),
-    .almost_full   (),
-    .overflow      (),
-    .underflow     (),
-    .prog_empty    (),
-    .prog_full     (),
-    .sleep         (1'b0),
-    .sbiterr       (),
-    .dbiterr       (),
-    .injectsbiterr (1'b0),
-    .injectdbiterr (1'b0),
-    .wr_clk        (axis_aclk),
-    .rst           (~axil_aresetn),
-    .rd_rst_busy   (),
-    .wr_rst_busy   ()
-  );
-
-  // When the FIFO is briefly empty (first packet still propagating through
-  // the slice), fall back to the pre-slice value directly.
-  assign m_axis_h2c_tuser_qid = h2c_qid_empty ? s_axis_h2c_tuser_qid : h2c_qid_dout;
-  end
-  endgenerate
 
   generate for (genvar i = 0; i < 64; i++) begin
     assign axis_h2c_tkeep[i] = (axis_h2c_tvalid && axis_h2c_tready && axis_h2c_tlast) ?
@@ -423,17 +393,20 @@ module qdma_subsystem_function #(
     assign axis_c2h_tuser_qid    = c2h_slice_tuser_out[106:96];
   end
   else begin
-    // v5.2.10: clk_converter must carry widened TUSER (qid + ptp_ts + size).
-    // NOTE: re-customize qdma_subsystem_clk_converter IP to TUSER_WIDTH=107
-    //       (was 16) before building any QDMA_ID != 0 target (xup_vv8 etc.).
-    //       au200 single-QDMA build uses QDMA_ID == 0 path above and is
-    //       unaffected by this comment.
+    // clk_converter carries the widened TUSER (qid + ptp_ts + size), packed
+    // identically to the QDMA_ID == 0 register slice above.
+    //
+    // The IP this used to instantiate (qdma_subsystem_clk_converter) was still
+    // customized to the original TUSER_WIDTH=16, so these 107 bits were
+    // silently truncated to the low 16 -- qid and ptp_ts were simply lost, with
+    // no width error anywhere, because the IP's port width is a parameter.  It
+    // now instantiates a converter built at 107 bits.
     wire [106:0] c2h_cc_tuser_in  = {s_axis_c2h_tuser_qid,
                                      s_axis_c2h_tuser_ptp_ts,
                                      s_axis_c2h_tuser_size};
     wire [106:0] c2h_cc_tuser_out;
 
-    qdma_subsystem_clk_converter c2h_axis_inst(
+    qdma_subsystem_clk_converter_c2h c2h_axis_inst(
       .s_axis_aresetn (axil_aresetn),
       .m_axis_aresetn (axil_aresetn),
       .s_axis_aclk    (axis_master_aclk),

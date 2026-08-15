@@ -38,7 +38,7 @@ module qdma_subsystem_c2h #(
   output                 [15:0] m_axis_qdma_c2h_ctrl_len,
   output                 [10:0] m_axis_qdma_c2h_ctrl_qid,
   output                        m_axis_qdma_c2h_ctrl_has_cmpt,
-  output reg              [5:0] m_axis_qdma_c2h_mty,
+  output                  [5:0] m_axis_qdma_c2h_mty,
   input                         m_axis_qdma_c2h_tready,
 
   output                        m_axis_qdma_cpl_tvalid,
@@ -80,6 +80,7 @@ module qdma_subsystem_c2h #(
 
   // Post-register-slice PTP timestamp (extracted from widened tuser)
   wire              [79:0] axis_c2h_tuser_ptp_ts_post;
+  wire               [5:0] axis_c2h_mty;
 
   wire                     crc32_en;
   wire             [511:0] crc32_data;
@@ -154,9 +155,23 @@ module qdma_subsystem_c2h #(
     end
   end
 
+  // MTY (number of unused bytes in the final beat) must stay aligned with the
+  // tlast beat it describes.  It used to be a register clocked off the *input*
+  // handshake while tdata/tlast/ctrl_len travelled through the slice below,
+  // which is a 2-deep skid buffer ("full" mode: s_axis_tready = ~filled[1]).
+  // Under back-pressure the slave side accepts the next packet's first beat --
+  // rewriting mty to 0 -- while the master side is still presenting the previous
+  // packet's last beat, so QDMA read that beat as 64 valid bytes instead of
+  // (64 - mty) and raised C2H LEN_MISMATCH against ctrl_len.  It only showed up
+  // with jumbo frames, because that is what generates enough back-pressure for a
+  // stall to land exactly on a packet boundary.  Carrying mty through the slice
+  // in tuser makes the alignment structural instead of a latency coincidence.
+  assign axis_c2h_mty = (axis_c2h_tlast && axis_c2h_tuser_size[5:0] != 0)
+                      ? (6'd64 - axis_c2h_tuser_size[5:0]) : 6'd0;
+
   axi_stream_register_slice #(
     .TDATA_W (512),
-    .TUSER_W (16 + 11 + 80),
+    .TUSER_W (16 + 11 + 80 + 6),
     .MODE    ("full")
   ) slice_inst (
     .s_axis_tvalid (axis_c2h_tvalid),
@@ -165,7 +180,7 @@ module qdma_subsystem_c2h #(
     .s_axis_tlast  (axis_c2h_tlast),
     .s_axis_tid    (0),
     .s_axis_tdest  (0),
-    .s_axis_tuser  ({axis_c2h_tuser_ptp_ts, axis_c2h_tuser_size, axis_c2h_tuser_qid}),
+    .s_axis_tuser  ({axis_c2h_mty, axis_c2h_tuser_ptp_ts, axis_c2h_tuser_size, axis_c2h_tuser_qid}),
     .s_axis_tready (axis_c2h_tready),
 
     .m_axis_tvalid (m_axis_qdma_c2h_tvalid),
@@ -174,21 +189,12 @@ module qdma_subsystem_c2h #(
     .m_axis_tlast  (m_axis_qdma_c2h_tlast),
     .m_axis_tid    (),
     .m_axis_tdest  (),
-    .m_axis_tuser  ({axis_c2h_tuser_ptp_ts_post, m_axis_qdma_c2h_ctrl_len, m_axis_qdma_c2h_ctrl_qid}),
+    .m_axis_tuser  ({m_axis_qdma_c2h_mty, axis_c2h_tuser_ptp_ts_post, m_axis_qdma_c2h_ctrl_len, m_axis_qdma_c2h_ctrl_qid}),
     .m_axis_tready (m_axis_qdma_c2h_tready),
 
     .aclk          (axis_aclk),
     .aresetn       (axil_aresetn)
   );
-
-  always @(posedge axis_aclk) begin
-    if (~axil_aresetn) begin
-      m_axis_qdma_c2h_mty <= 0;
-    end
-    else if (axis_c2h_tvalid && axis_c2h_tready) begin
-       m_axis_qdma_c2h_mty <= (axis_c2h_tlast) ? (axis_c2h_tuser_size[5:0] == 0) ? 0 : (64 - axis_c2h_tuser_size[5:0]) : 0;
-    end
-  end
 
   assign m_axis_qdma_c2h_tcrc          = crc32_out;
   assign m_axis_qdma_c2h_ctrl_marker   = 1'b0;

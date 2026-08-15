@@ -184,6 +184,34 @@ module eth_2cmac_1pf_250mhz #(
   // part-select when NUM_INTF==1.
   localparam int SEL_W           = (NUM_INTF > 1) ? $clog2(NUM_INTF) : 1;
 
+  // ---- 1:1 pinned mode (au55n / Varium C1100 bifurcated x8x8) -------------
+  // With one QDMA endpoint per CMAC there is nothing to steer: endpoint c owns
+  // CMAC c outright.  The qid demux on H2C and the round-robin arbiter on C2H
+  // are both bypassed, which removes the only place the two ports contend.
+  //
+  // Enabled automatically when the shell presents exactly as many QDMA
+  // interfaces as there are CMACs.  With NUM_PHYS_FUNC=1 the shell drives
+  // NUM_QDMA interfaces, so the condition is NUM_QDMA == NUM_INTF and
+  // NUM_QDMA > 1 (NUM_QDMA==1 with one CMAC stays on the legacy path).
+  //
+  // Port widths are deliberately NOT changed.  The qdma-side ports are sized
+  // NUM_INTF*NUM_QDMA while the shell drives NUM_PHYS_FUNC*NUM_QDMA; those
+  // disagree (4 vs 2 here), but the surplus high slots are simply tied off, as
+  // they already are today at NUM_QDMA=1.  Resizing them would touch the
+  // au200/au250 build for no functional gain.
+  localparam int PIN_1TO1 = ((NUM_QDMA > 1) && (NUM_QDMA == NUM_INTF)) ? 1 : 0;
+
+  // Announce the datapath mode at elaboration.  Which branch you got changes
+  // the steering behaviour completely, and it is derived rather than set
+  // explicitly, so make it visible in the synthesis log instead of leaving it
+  // to be inferred from the parameters.
+  initial begin
+    if (PIN_1TO1)
+      $display("INFO: eth_2cmac_1pf_250mhz: 1:1 PINNED mode - QDMA endpoint c <-> CMAC c, no qid demux, no C2H arbiter (NUM_QDMA=%0d, NUM_INTF=%0d)", NUM_QDMA, NUM_INTF);
+    else
+      $display("INFO: eth_2cmac_1pf_250mhz: qid-STEERED mode - single H2C slot demuxed by qid, N-way C2H arbiter (NUM_QDMA=%0d, NUM_INTF=%0d)", NUM_QDMA, NUM_INTF);
+  end
+
   // Depth of the per-CMAC RX packet FIFO, in beats.  Declared here rather than
   // beside the FIFO instance further down because the diag CSR (instantiated
   // above it) needs it to derive the flow-control watermark reset values and to
@@ -238,7 +266,14 @@ module eth_2cmac_1pf_250mhz #(
   wire [16*NUM_INTF-1:0] fc_fill_bus;
   wire    [NUM_INTF-1:0] fc_congested_bus;
 
-  generate if (NUM_QDMA <= 1) begin : gen_diag_csr
+  // The diag CSR is instantiated unconditionally.  It used to be gated on
+  // NUM_QDMA <= 1, which left s_axil_*ready / bvalid / rvalid UNDRIVEN in any
+  // multi-QDMA build -- and per this module's header, the shell's AXI-Lite
+  // crossbar hangs on the first access when its slave never responds.  Nothing
+  // in this CSR depends on NUM_QDMA: its AXI-Lite ports are sized NUM_INTF*2,
+  // and the counters/watermarks are per-CMAC.  au200/au250 (NUM_QDMA=1) take
+  // the same branch they always did.
+  generate if (1) begin : gen_diag_csr
     rdma_diag_csr #(
       .REG_ADDR_W    (12),
       .NUM_COUNTERS  (18),
@@ -332,12 +367,25 @@ module eth_2cmac_1pf_250mhz #(
   // Per-CMAC granted-ready from the selected CMAC TX adapter.
   wire                h2c_granted_ready = m_axis_adap_tx_250mhz_tready[h2c_cur_sel];
 
-  assign s_axis_qdma_h2c_tready[0] = h2c_granted_ready;
-  // Unused H2C slots (NUM_PHYS_FUNC=1 drives only slot 0): absorb glitches.
   generate
-    if (NUM_INTF*NUM_QDMA > 1) begin : gen_h2c_tie
-      assign s_axis_qdma_h2c_tready[NUM_INTF*NUM_QDMA-1:1] =
-             {(NUM_INTF*NUM_QDMA-1){1'b1}};
+    if (PIN_1TO1) begin : gen_h2c_ready_1to1
+      // Endpoint c is backpressured by CMAC c alone -- no shared grant, so a
+      // stalled CMAC cannot throttle the other endpoint's host.
+      for (genvar c = 0; c < NUM_INTF; c++) begin : gen_rdy
+        assign s_axis_qdma_h2c_tready[c] = m_axis_adap_tx_250mhz_tready[c];
+      end
+      if (NUM_INTF*NUM_QDMA > NUM_INTF) begin : gen_h2c_tie_1to1
+        assign s_axis_qdma_h2c_tready[NUM_INTF*NUM_QDMA-1:NUM_INTF] =
+               {(NUM_INTF*NUM_QDMA-NUM_INTF){1'b1}};
+      end
+    end
+    else begin : gen_h2c_ready_demux
+      assign s_axis_qdma_h2c_tready[0] = h2c_granted_ready;
+      // Unused H2C slots (NUM_PHYS_FUNC=1 drives only slot 0): absorb glitches.
+      if (NUM_INTF*NUM_QDMA > 1) begin : gen_h2c_tie
+        assign s_axis_qdma_h2c_tready[NUM_INTF*NUM_QDMA-1:1] =
+               {(NUM_INTF*NUM_QDMA-1){1'b1}};
+      end
     end
   endgenerate
 
@@ -370,17 +418,36 @@ module eth_2cmac_1pf_250mhz #(
   // ----- Per-CMAC TX drive (pure routing, no arbiter) ---------------------
   // CMAC c is driven by the demuxed H2C stream only when it is the current
   // selection.  tuser_dst follows the original convention `1 << (6+c)`.
-  generate for (genvar c = 0; c < NUM_INTF; c++) begin : gen_tx
-    wire sel_match = (h2c_cur_sel == c[SEL_W-1:0]);
+  generate
+  if (PIN_1TO1) begin : gen_tx_1to1
+    // Straight wire: QDMA endpoint c -> CMAC c.  The qid is NOT inspected --
+    // there is only one destination CMAC per endpoint, so the CMAC-select bits
+    // of the qid carry no information here.  The qid still reaches the shell
+    // untouched for the driver's per-queue steering within the endpoint.
+    for (genvar c = 0; c < NUM_INTF; c++) begin : gen_tx
+      assign m_axis_adap_tx_250mhz_tvalid[c]                     = s_axis_qdma_h2c_tvalid[c];
+      assign m_axis_adap_tx_250mhz_tdata[`getvec(512, c)]        = s_axis_qdma_h2c_tdata[`getvec(512, c)];
+      assign m_axis_adap_tx_250mhz_tkeep[`getvec(64, c)]         = s_axis_qdma_h2c_tkeep[`getvec(64, c)];
+      assign m_axis_adap_tx_250mhz_tlast[c]                      = s_axis_qdma_h2c_tlast[c];
+      assign m_axis_adap_tx_250mhz_tuser_size[`getvec(16, c)]    = s_axis_qdma_h2c_tuser_size[`getvec(16, c)];
+      assign m_axis_adap_tx_250mhz_tuser_src[`getvec(16, c)]     = s_axis_qdma_h2c_tuser_src[`getvec(16, c)];
+      assign m_axis_adap_tx_250mhz_tuser_dst[`getvec(16, c)]     = 16'h1 << (6 + c);
+      assign m_axis_adap_tx_250mhz_tuser_ptp_tag[`getvec(16, c)] = s_axis_qdma_h2c_tuser_ptp_tag[`getvec(16, c)];
+    end
+  end
+  else begin : gen_tx_demux
+    for (genvar c = 0; c < NUM_INTF; c++) begin : gen_tx
+      wire sel_match = (h2c_cur_sel == c[SEL_W-1:0]);
 
-    assign m_axis_adap_tx_250mhz_tvalid[c]                = h2c_tvalid && sel_match;
-    assign m_axis_adap_tx_250mhz_tdata[`getvec(512, c)]   = h2c_tdata;
-    assign m_axis_adap_tx_250mhz_tkeep[`getvec(64, c)]    = h2c_tkeep;
-    assign m_axis_adap_tx_250mhz_tlast[c]                 = h2c_tlast;
-    assign m_axis_adap_tx_250mhz_tuser_size[`getvec(16, c)]    = h2c_tuser_size;
-    assign m_axis_adap_tx_250mhz_tuser_src[`getvec(16, c)]     = h2c_tuser_src;
-    assign m_axis_adap_tx_250mhz_tuser_dst[`getvec(16, c)]     = 16'h1 << (6 + c);
-    assign m_axis_adap_tx_250mhz_tuser_ptp_tag[`getvec(16, c)] = h2c_tuser_ptp_tag;
+      assign m_axis_adap_tx_250mhz_tvalid[c]                = h2c_tvalid && sel_match;
+      assign m_axis_adap_tx_250mhz_tdata[`getvec(512, c)]   = h2c_tdata;
+      assign m_axis_adap_tx_250mhz_tkeep[`getvec(64, c)]    = h2c_tkeep;
+      assign m_axis_adap_tx_250mhz_tlast[c]                 = h2c_tlast;
+      assign m_axis_adap_tx_250mhz_tuser_size[`getvec(16, c)]    = h2c_tuser_size;
+      assign m_axis_adap_tx_250mhz_tuser_src[`getvec(16, c)]     = h2c_tuser_src;
+      assign m_axis_adap_tx_250mhz_tuser_dst[`getvec(16, c)]     = 16'h1 << (6 + c);
+      assign m_axis_adap_tx_250mhz_tuser_ptp_tag[`getvec(16, c)] = h2c_tuser_ptp_tag;
+    end
   end
   endgenerate
 
@@ -650,44 +717,73 @@ module eth_2cmac_1pf_250mhz #(
   // unpacked from the per-input FIFO output — qid is sourced from the FIFO
   // TUSER, NOT a separate grant-keyed constant, so the CMAC-identity bits
   // ride through the same BRAM cells as the data they describe.
-  assign m_axis_qdma_c2h_tvalid[0]          = granted_tvalid;
-  assign m_axis_qdma_c2h_tdata[511:0]       = g_tdata;
-  assign m_axis_qdma_c2h_tkeep[63:0]        = g_tkeep;
-  assign m_axis_qdma_c2h_tlast[0]           = granted_tlast;
-  assign m_axis_qdma_c2h_tuser_size[15:0]   = g_tuser[ 15:  0];
-  assign m_axis_qdma_c2h_tuser_src[15:0]    = g_tuser[ 31: 16];
-  // tuser_dst one-hot: bit `grant` set (CMAC c -> dst bit c).
-  assign m_axis_qdma_c2h_tuser_dst[15:0]    = 16'h1 << arb_grant;
-  assign m_axis_qdma_c2h_tuser_ptp_ts[79:0] = g_tuser[111: 32];
-  assign m_axis_qdma_c2h_tuser_qid[10:0]    = g_tuser[122:112];
+  generate
+  if (PIN_1TO1) begin : gen_c2h_1to1
+    // CMAC c's packet FIFO drives QDMA endpoint c directly: no arbiter, no
+    // grant, no head-of-line coupling between the two ports.  Each endpoint
+    // sees only its own CMAC's traffic, so the two hosts cannot backpressure
+    // each other.
+    //
+    // The qid still comes out of the FIFO TUSER (not a constant keyed off a
+    // grant), so it stays byte-locked to the data it describes.
+    for (genvar c = 0; c < NUM_INTF; c++) begin : gen_c2h
+      wire [ARB_TUSER_W-1:0] u = arb_in_tuser[`getvec(ARB_TUSER_W, c)];
 
-  // Backpressure: ready only to the granted FIFO output.
-  generate for (genvar c = 0; c < NUM_INTF; c++) begin : gen_arb_ready
-    assign arb_in_tready[c] = (arb_grant == c[GRANT_W-1:0]) && out_tready_0;
+      assign m_axis_qdma_c2h_tvalid[c]                     = arb_in_tvalid[c];
+      assign m_axis_qdma_c2h_tdata[`getvec(512, c)]        = arb_in_tdata[`getvec(512, c)];
+      assign m_axis_qdma_c2h_tkeep[`getvec(64, c)]         = arb_in_tkeep[`getvec(64, c)];
+      assign m_axis_qdma_c2h_tlast[c]                      = arb_in_tlast[c];
+      assign m_axis_qdma_c2h_tuser_size[`getvec(16, c)]    = u[ 15:  0];
+      assign m_axis_qdma_c2h_tuser_src[`getvec(16, c)]     = u[ 31: 16];
+      assign m_axis_qdma_c2h_tuser_dst[`getvec(16, c)]     = 16'h1 << c;
+      assign m_axis_qdma_c2h_tuser_ptp_ts[`getvec(80, c)]  = u[111: 32];
+      assign m_axis_qdma_c2h_tuser_qid[`getvec(11, c)]     = u[122:112];
+
+      assign arb_in_tready[c] = m_axis_qdma_c2h_tready[c];
+    end
+  end
+  else begin : gen_c2h_arb
+    assign m_axis_qdma_c2h_tvalid[0]          = granted_tvalid;
+    assign m_axis_qdma_c2h_tdata[511:0]       = g_tdata;
+    assign m_axis_qdma_c2h_tkeep[63:0]        = g_tkeep;
+    assign m_axis_qdma_c2h_tlast[0]           = granted_tlast;
+    assign m_axis_qdma_c2h_tuser_size[15:0]   = g_tuser[ 15:  0];
+    assign m_axis_qdma_c2h_tuser_src[15:0]    = g_tuser[ 31: 16];
+    // tuser_dst one-hot: bit `grant` set (CMAC c -> dst bit c).
+    assign m_axis_qdma_c2h_tuser_dst[15:0]    = 16'h1 << arb_grant;
+    assign m_axis_qdma_c2h_tuser_ptp_ts[79:0] = g_tuser[111: 32];
+    assign m_axis_qdma_c2h_tuser_qid[10:0]    = g_tuser[122:112];
+
+    // Backpressure: ready only to the granted FIFO output.
+    for (genvar c = 0; c < NUM_INTF; c++) begin : gen_arb_ready
+      assign arb_in_tready[c] = (arb_grant == c[GRANT_W-1:0]) && out_tready_0;
+    end
   end
   endgenerate
 
-  // Tie off unused C2H slots cleanly (NUM_PHYS_FUNC=1 uses only slot 0).
+  // Tie off unused C2H slots.  In 1:1 mode slots 0..NUM_INTF-1 are all live,
+  // so only the surplus above NUM_INTF is tied; otherwise only slot 0 is live.
+  localparam int C2H_LIVE = PIN_1TO1 ? NUM_INTF : 1;
   generate
-    if (NUM_INTF*NUM_QDMA > 1) begin : gen_c2h_tie
-      assign m_axis_qdma_c2h_tvalid[NUM_INTF*NUM_QDMA-1:1] =
-             {(NUM_INTF*NUM_QDMA-1){1'b0}};
-      assign m_axis_qdma_c2h_tdata[512*NUM_INTF*NUM_QDMA-1:512] =
-             {(512*(NUM_INTF*NUM_QDMA-1)){1'b0}};
-      assign m_axis_qdma_c2h_tkeep[64*NUM_INTF*NUM_QDMA-1:64] =
-             {(64*(NUM_INTF*NUM_QDMA-1)){1'b0}};
-      assign m_axis_qdma_c2h_tlast[NUM_INTF*NUM_QDMA-1:1] =
-             {(NUM_INTF*NUM_QDMA-1){1'b0}};
-      assign m_axis_qdma_c2h_tuser_size[16*NUM_INTF*NUM_QDMA-1:16] =
-             {(16*(NUM_INTF*NUM_QDMA-1)){1'b0}};
-      assign m_axis_qdma_c2h_tuser_src[16*NUM_INTF*NUM_QDMA-1:16] =
-             {(16*(NUM_INTF*NUM_QDMA-1)){1'b0}};
-      assign m_axis_qdma_c2h_tuser_dst[16*NUM_INTF*NUM_QDMA-1:16] =
-             {(16*(NUM_INTF*NUM_QDMA-1)){1'b0}};
-      assign m_axis_qdma_c2h_tuser_ptp_ts[80*NUM_INTF*NUM_QDMA-1:80] =
-             {(80*(NUM_INTF*NUM_QDMA-1)){1'b0}};
-      assign m_axis_qdma_c2h_tuser_qid[11*NUM_INTF*NUM_QDMA-1:11] =
-             {(11*(NUM_INTF*NUM_QDMA-1)){1'b0}};
+    if (NUM_INTF*NUM_QDMA > C2H_LIVE) begin : gen_c2h_tie
+      assign m_axis_qdma_c2h_tvalid[NUM_INTF*NUM_QDMA-1:C2H_LIVE] =
+             {(NUM_INTF*NUM_QDMA-C2H_LIVE){1'b0}};
+      assign m_axis_qdma_c2h_tdata[512*NUM_INTF*NUM_QDMA-1:512*C2H_LIVE] =
+             {(512*(NUM_INTF*NUM_QDMA-C2H_LIVE)){1'b0}};
+      assign m_axis_qdma_c2h_tkeep[64*NUM_INTF*NUM_QDMA-1:64*C2H_LIVE] =
+             {(64*(NUM_INTF*NUM_QDMA-C2H_LIVE)){1'b0}};
+      assign m_axis_qdma_c2h_tlast[NUM_INTF*NUM_QDMA-1:C2H_LIVE] =
+             {(NUM_INTF*NUM_QDMA-C2H_LIVE){1'b0}};
+      assign m_axis_qdma_c2h_tuser_size[16*NUM_INTF*NUM_QDMA-1:16*C2H_LIVE] =
+             {(16*(NUM_INTF*NUM_QDMA-C2H_LIVE)){1'b0}};
+      assign m_axis_qdma_c2h_tuser_src[16*NUM_INTF*NUM_QDMA-1:16*C2H_LIVE] =
+             {(16*(NUM_INTF*NUM_QDMA-C2H_LIVE)){1'b0}};
+      assign m_axis_qdma_c2h_tuser_dst[16*NUM_INTF*NUM_QDMA-1:16*C2H_LIVE] =
+             {(16*(NUM_INTF*NUM_QDMA-C2H_LIVE)){1'b0}};
+      assign m_axis_qdma_c2h_tuser_ptp_ts[80*NUM_INTF*NUM_QDMA-1:80*C2H_LIVE] =
+             {(80*(NUM_INTF*NUM_QDMA-C2H_LIVE)){1'b0}};
+      assign m_axis_qdma_c2h_tuser_qid[11*NUM_INTF*NUM_QDMA-1:11*C2H_LIVE] =
+             {(11*(NUM_INTF*NUM_QDMA-C2H_LIVE)){1'b0}};
     end
   endgenerate
 

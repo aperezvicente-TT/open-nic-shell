@@ -75,6 +75,13 @@ module open_nic_shell #(
 `elsif __au55n__
   output                         hbm_cattrip,
   input                    [3:0] satellite_gpio,
+  // QSFP cage LEDs.  Two physical LEDs per cage: a bi-colour link-status LED
+  // (green + yellow) and a dedicated activity LED -- six drive signals.
+  // Sized by NUM_CMAC_PORT so a 1-CMAC build leaves cage 1 unconstrained,
+  // matching the existing conditional structure in constr/au55n/pins.xdc.
+  output   [NUM_CMAC_PORT-1:0] qsfp_activity_led,
+  output   [NUM_CMAC_PORT-1:0] qsfp_link_stat_ledg,
+  output   [NUM_CMAC_PORT-1:0] qsfp_link_stat_ledy,
 `elsif __au55c__
   output                         hbm_cattrip,
   input                    [3:0] satellite_gpio,
@@ -87,12 +94,13 @@ module open_nic_shell #(
   input                    [3:0] satellite_gpio,
   output                   [2:0] gpio_led,
 `elsif __au250__
-  output                   [1:0] qsfp_resetl, 
+  output                   [1:0] qsfp_resetl,
   input                    [1:0] qsfp_modprsl,
-  input                    [1:0] qsfp_intl,   
+  input                    [1:0] qsfp_intl,
   output                   [1:0] qsfp_lpmode,
   output                   [1:0] qsfp_modsell,
   input                    [3:0] satellite_gpio,
+  output                   [2:0] gpio_led,
 `elsif __au45n__
   input                    [1:0] satellite_gpio,
 `endif
@@ -106,6 +114,14 @@ module open_nic_shell #(
   input                [23:0] pcie_rxn,
   output               [23:0] pcie_txp,
   output               [23:0] pcie_txn,
+`elsif __au55n_dual_x8__
+// C1100 bifurcated x8x8: ONE x16 edge connector split 8 + 8 between the two
+// endpoints, so the total lane count is 16 (8 per endpoint), not 16 per
+// endpoint.  Endpoint A gets edge lanes 0..7, endpoint B gets 8..15.
+  input      [8*NUM_QDMA-1:0] pcie_rxp,
+  input      [8*NUM_QDMA-1:0] pcie_rxn,
+  output     [8*NUM_QDMA-1:0] pcie_txp,
+  output     [8*NUM_QDMA-1:0] pcie_txn,
 `else
   input     [16*NUM_QDMA-1:0] pcie_rxp,
   input     [16*NUM_QDMA-1:0] pcie_rxn,
@@ -114,7 +130,15 @@ module open_nic_shell #(
 `endif
   input        [NUM_QDMA-1:0] pcie_refclk_p,
   input        [NUM_QDMA-1:0] pcie_refclk_n,
+`ifdef __au55n_dual_x8__
+// The C1100 has exactly ONE PCIe reset pin (PCIE_PERST_LS_65, BF41) for the
+// whole connector, and two ports cannot share a PACKAGE_PIN.  Scalar here,
+// fanned out to both endpoints below, so they reset together -- which is the
+// correct behaviour for a single bifurcated connector.
+  input                       pcie_rstn,
+`else
   input        [NUM_QDMA-1:0] pcie_rstn,
+`endif
 
   input    [4*NUM_CMAC_PORT-1:0] qsfp_rxp,
   input    [4*NUM_CMAC_PORT-1:0] qsfp_rxn,
@@ -235,10 +259,17 @@ module open_nic_shell #(
 
 `ifdef __synthesis__
 
+`ifdef __au55n_dual_x8__
+  wire  [8*NUM_QDMA-1:0] qdma_pcie_rxp;
+  wire  [8*NUM_QDMA-1:0] qdma_pcie_rxn;
+  wire  [8*NUM_QDMA-1:0] qdma_pcie_txp;
+  wire  [8*NUM_QDMA-1:0] qdma_pcie_txn;
+`else
   wire [16*NUM_QDMA-1:0] qdma_pcie_rxp;
   wire [16*NUM_QDMA-1:0] qdma_pcie_rxn;
   wire [16*NUM_QDMA-1:0] qdma_pcie_txp;
   wire [16*NUM_QDMA-1:0] qdma_pcie_txn;
+`endif
 
   wire [NUM_QDMA-1:0] powerup_rstn;
   wire [NUM_QDMA-1:0] pcie_user_lnk_up;
@@ -264,10 +295,19 @@ module open_nic_shell #(
   wire     [NUM_QDMA-1:0] axil_pcie_rready;
 
   wire     [NUM_QDMA-1:0] pcie_rstn_int;
+`ifdef __au55n_dual_x8__
+  // One PERST pin (BF41) for the whole bifurcated connector: buffer once and
+  // fan out to both endpoints.  A per-endpoint IBUF is impossible here because
+  // there is only one port to buffer.
+  wire                    pcie_rstn_buf;
+  IBUF pcie_rstn_ibuf_inst (.I(pcie_rstn), .O(pcie_rstn_buf));
+  assign pcie_rstn_int = {NUM_QDMA{pcie_rstn_buf}};
+`else
   generate for (genvar i = 0; i < NUM_QDMA; i++) begin
     IBUF pcie_rstn_ibuf_inst (.I(pcie_rstn[i]), .O(pcie_rstn_int[i]));
   end
   endgenerate
+`endif
   
 // Fix the CATTRIP issue for AU280, AU50, AU55C and AU55N custom flow
 //
@@ -604,6 +644,21 @@ module open_nic_shell #(
   assign qdma_pcie_rxn[23:0] = pcie_rxn;
   assign qdma_pcie_txp[23:0] = pcie_txp;
   assign qdma_pcie_txn[23:0] = pcie_txn;
+`elsif __au55n_dual_x8__
+  // 8 lanes per endpoint, and note the TX direction: port <= internal wire.
+  //
+  // The generic branch below has TX assigned the other way round, which leaves
+  // the top-level pcie_txp/txn outputs undriven -- au200 synthesis says so:
+  //   WARNING: [Synth 8-3848] Net pcie_txp ... does not have driver
+  // That is survivable on the other targets only because GT serial pins bypass
+  // the fabric entirely: the physical lane is fixed by where the GTYE4_CHANNEL
+  // is placed (board interface / pcie_blk_locn), not by the port.  This build
+  // constrains its lane pins explicitly (constr/au55n/pins.xdc) to pin the two
+  // endpoints to disjoint quads, so here the ports have to be real.
+  assign qdma_pcie_rxp       = pcie_rxp;
+  assign qdma_pcie_rxn       = pcie_rxn;
+  assign pcie_txp            = qdma_pcie_txp;
+  assign pcie_txn            = qdma_pcie_txn;
 `else
   assign qdma_pcie_rxp       = pcie_rxp;
   assign qdma_pcie_rxn       = pcie_rxn;
@@ -862,10 +917,17 @@ module open_nic_shell #(
       .s_axis_c2h_tready                    (axis_qdma_c2h_tready[`getvec(NUM_PHYS_FUNC, i)]),
 
   `ifdef __synthesis__
+    `ifdef __au55n_dual_x8__
+      .pcie_rxp                             (qdma_pcie_rxp[`getvec(8, i)]),
+      .pcie_rxn                             (qdma_pcie_rxn[`getvec(8, i)]),
+      .pcie_txp                             (qdma_pcie_txp[`getvec(8, i)]),
+      .pcie_txn                             (qdma_pcie_txn[`getvec(8, i)]),
+    `else
       .pcie_rxp                             (qdma_pcie_rxp[`getvec(16, i)]),
       .pcie_rxn                             (qdma_pcie_rxn[`getvec(16, i)]),
       .pcie_txp                             (qdma_pcie_txp[`getvec(16, i)]),
       .pcie_txn                             (qdma_pcie_txn[`getvec(16, i)]),
+    `endif
     
       .m_axil_pcie_awvalid                  (axil_pcie_awvalid[i]),
       .m_axil_pcie_awaddr                   (axil_pcie_awaddr[`getvec(32, i)]),
@@ -1300,8 +1362,8 @@ module open_nic_shell #(
     .cmac_clk                        (cmac_clk)
   );
 
-  // --- LED logic (AU200: LED[0]=Red heartbeat, LED[1]=Yellow QSFP1, LED[2]=Green QSFP0) ---
-`ifdef __au200__
+  // --- LED logic (AU200/AU250: LED[0]=Red heartbeat, LED[1]=Yellow QSFP1, LED[2]=Green QSFP0) ---
+`ifdef __gpio_led__
   logic [26:0] led_hb_cnt;
   always_ff @(posedge axil_aclk[0]) led_hb_cnt <= led_hb_cnt + 1'b1;
 
@@ -1336,6 +1398,67 @@ module open_nic_shell #(
   assign gpio_led[0] = led_hb_cnt[26];
   assign gpio_led[1] = (NUM_CMAC_PORT > 1) ? cmac_link_up[1] & ~led_act_pulse[1] : 1'b0;
   assign gpio_led[2] = cmac_link_up[0] & ~led_act_pulse[0];
+`endif
+
+  // --- QSFP cage LEDs (au55n / Varium C1100) --------------------------------
+  // Per cage: a bi-colour link-status LED (green + yellow) and a separate
+  // activity LED.
+  //
+  //   green    solid          link up
+  //   yellow   ~1 Hz blink    design alive but link DOWN
+  //   activity ~4.8 Hz blink  traffic on this port
+  //
+  // The yellow-when-down blink is the point of this block.  Without it,
+  // "FPGA never configured" and "configured but the link never trained" are
+  // both simply dark, and neither can be distinguished from the host until
+  // PCIe enumerates and the driver loads.
+  //
+  // This is intentionally NOT the au200 encoding.  au200 has three board LEDs
+  // for heartbeat plus two ports, so it folds activity onto the link LED by
+  // inverting it (link & ~activity).  Each cage here has its own activity LED,
+  // so the bi-colour LED is left free to encode link state directly.
+  //
+  // Self-contained rather than sharing the `__gpio_led__ block above: that
+  // macro is never defined by build.tcl, so that block is dead code on every
+  // target.  Duplicating ~20 lines of counters keeps au200/au250 untouched.
+  //
+  // Clock domains: green/yellow are driven entirely from axil_aclk
+  // (cmac_link_up_sync is already synchronised into it); activity is driven
+  // entirely from cmac_clk[k].  No output combines signals from two domains,
+  // so this adds no CDC.  See the false path in constr/au55n/timing.xdc.
+`ifdef __au55n__
+  logic [26:0] qsfp_led_hb_cnt;
+  always_ff @(posedge axil_aclk[0]) qsfp_led_hb_cnt <= qsfp_led_hb_cnt + 1'b1;
+
+  // Free-running oscillator gated by "saw a packet during the last period".
+  // A plain pulse-stretcher saturates at line rate and the LED then reads as
+  // permanently lit, which is useless for spotting whether traffic is moving.
+  //   2^26 / 322.265625 MHz ~= 208 ms -> ~4.8 Hz
+  logic [NUM_CMAC_PORT-1:0][25:0] qsfp_led_blink_cnt;
+  logic [NUM_CMAC_PORT-1:0]       qsfp_led_saw_pkt;
+  logic [NUM_CMAC_PORT-1:0]       qsfp_led_blink_en;
+  logic [NUM_CMAC_PORT-1:0]       qsfp_led_act;
+
+  generate for (genvar k = 0; k < NUM_CMAC_PORT; k++) begin : g_qsfp_led
+    wire pkt_beat = axis_cmac_rx_tvalid[k] |
+                    (axis_cmac_tx_tvalid[k] & axis_cmac_tx_tready[k]);
+
+    always_ff @(posedge cmac_clk[k]) begin
+      qsfp_led_blink_cnt[k] <= qsfp_led_blink_cnt[k] + 1'b1;
+      if (pkt_beat)
+        qsfp_led_saw_pkt[k] <= 1'b1;
+      if (&qsfp_led_blink_cnt[k]) begin
+        qsfp_led_blink_en[k] <= qsfp_led_saw_pkt[k] | pkt_beat;
+        qsfp_led_saw_pkt[k]  <= 1'b0;
+      end
+    end
+    assign qsfp_led_act[k] = qsfp_led_blink_en[k] & qsfp_led_blink_cnt[k][25];
+
+    assign qsfp_link_stat_ledg[k] = cmac_link_up_sync[k];
+    assign qsfp_link_stat_ledy[k] = ~cmac_link_up_sync[k] & qsfp_led_hb_cnt[26];
+    assign qsfp_activity_led[k]   = qsfp_led_act[k];
+  end
+  endgenerate
 `endif
 
   // ---------------------------------------------------------------------------

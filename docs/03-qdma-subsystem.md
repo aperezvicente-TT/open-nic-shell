@@ -76,10 +76,13 @@ In `qdma_subsystem_function.sv` (live path, `QDMA_ID==0`):
   Output unpack: `m_axis_h2c_tuser_size = tuser_out[15:0]`,
   `m_axis_h2c_tuser_qid = tuser_out[26:16]` (lines 269–270).
 
-> The `QDMA_ID != 0` path (a second QDMA instance) still uses the old
-> `clk_converter` + side-FIFO scheme and is **not** used on au200. If you ever build a
-> `NUM_QDMA=2` target, that path must be re-verified (comment at
-> `qdma_subsystem_function.sv:294–299`).
+> **Superseded.** The `QDMA_ID != 0` path used to carry the qid in a side-FIFO
+> beside a 16-bit-TUSER `clk_converter`, which skewed the qid by one packet at
+> packet boundaries. It now carries `{qid, size}` inside a 27-bit TUSER through
+> `qdma_subsystem_clk_converter_h2c`, and the side-FIFO is deleted — the same
+> byte-locked guarantee as `QDMA_ID == 0`, but across the clock domain crossing
+> that a second QDMA instance requires. See
+> `docs/au55n-2qdma-gen4x8-design.md` §5.2. Still unexercised by traffic.
 
 ## 3.4 The C2H qid width chain (96 → 107 bits)
 

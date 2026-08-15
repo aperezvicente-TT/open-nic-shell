@@ -25,5 +25,12 @@ set ips {
 
 if {$num_qdma > 1} {
     lappend ips "qdma_no_sriov_1"
-    lappend ips "qdma_subsystem_clk_converter"
+    # Two converters, because the two directions carry different TUSER widths:
+    #   h2c = {qid[10:0], size[15:0]}                 = 27 bits
+    #   c2h = {qid[10:0], ptp_ts[79:0], size[15:0]}   = 107 bits
+    # The single 16-bit qdma_subsystem_clk_converter they replace could carry
+    # neither, which is what forced the racy qid side-FIFO on the H2C path and
+    # silently truncated qid+ptp_ts on the C2H path.
+    lappend ips "qdma_subsystem_clk_converter_h2c"
+    lappend ips "qdma_subsystem_clk_converter_c2h"
 }

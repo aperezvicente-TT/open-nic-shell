@@ -125,4 +125,17 @@ files will need that IP available.
 - CMAC `c` owns absolute qid range `[c*64, (c+1)*64)`. RX traffic from CMAC
   `c` is tagged `qid = c*64` (lands on that CMAC's first netdev queue; RSS
   spreading is a follow-up).
-- `NUM_INTF` (= `NUM_CMAC_PORT`) supported 2..8. `NUM_QDMA` expected 1.
+- `NUM_INTF` (= `NUM_CMAC_PORT`) supported 2..8.
+- `NUM_QDMA` may be 1 or equal to `NUM_INTF`:
+  - `NUM_QDMA == 1` — **qid-steered mode** (the original behaviour). One H2C
+    slot demuxed to the owning CMAC by absolute qid; an N-way round-robin
+    arbiter muxes the CMAC RX FIFOs onto C2H slot 0. The `PER_CMAC_QUEUES = 64`
+    contract above applies.
+  - `NUM_QDMA == NUM_INTF` (> 1) — **1:1 pinned mode**, selected automatically.
+    QDMA endpoint `c` is wired straight to CMAC `c`: no qid demux, no arbiter,
+    no shared backpressure between endpoints. The CMAC-select bits of the qid
+    carry no meaning in this mode (there is one destination per endpoint), but
+    the qid is still forwarded intact for per-queue steering *within* an
+    endpoint, and each endpoint keeps its own independent qid space.
+  - Any other combination is not supported.
+- The plugin `$display`s which mode it elaborated; check the synthesis log.

@@ -73,10 +73,19 @@ module qdma_subsystem #(
   output     [NUM_PHYS_FUNC-1:0] s_axis_c2h_tready,
 
 `ifdef __synthesis__
+`ifdef __au55n_dual_x8__
+  // Bifurcated x8x8: each endpoint owns 8 lanes, so the QDMA IP underneath is
+  // configured X8 and its pci_exp_* ports are 8 bits wide.
+  input                    [7:0] pcie_rxp,
+  input                    [7:0] pcie_rxn,
+  output                   [7:0] pcie_txp,
+  output                   [7:0] pcie_txn,
+`else
   input                   [15:0] pcie_rxp,
   input                   [15:0] pcie_rxn,
   output                  [15:0] pcie_txp,
   output                  [15:0] pcie_txn,
+`endif
 
   // BAR2-mapped master AXI-Lite feeding into system configuration block
   output                         m_axil_pcie_awvalid,
