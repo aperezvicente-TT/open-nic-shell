@@ -38,6 +38,16 @@ create_ip -name qdma -vendor xilinx.com -library ip -module_name $qdma -dir ${ip
 # ([Place 30-739]) for lanes 0..7 in quads X1Y0/X1Y1.  That is the same pin
 # pair constr/au50/pins.xdc already constrains, so nothing moves.
 # ---------------------------------------------------------------------------
+# PF0_MSIX_CAP_TABLE_SIZE_qdma, 2026-08-15: raised {009} -> {01F}.  The field is
+# encoded N-1, so {009} advertised only 10 MSI-X vectors.  The onic driver takes
+# 4 of those for non-queue use (user + error + ERNIC0/1), leaving 6 for queues --
+# and queue count is what caps throughput on this card.  Measured with the
+# driver's num_cmacs_hint=1 (8 iperf3 processes, MTU 9000, 3 reps):
+#   3 queues -> 43.3 Gb/s      6 queues -> 79.9 Gb/s
+# i.e. near-linear, so 10 vectors was the binding constraint.  {01F} = 32
+# vectors -> 28 queues, matching the au200 file in this directory.
+# NB: keep comments OUTSIDE the set_property -dict braces below -- '#' is not a
+# comment inside a Tcl braced list, and each word becomes a bogus property.
 set au50_gen4x8 [expr {[info exists pcie_gen4x8] && $pcie_gen4x8}]
 if {$au50_gen4x8} {
     set au50_pcie_intf {CONFIG.PCIE_BOARD_INTERFACE {pci_express_x8}}
@@ -64,7 +74,7 @@ set_property -dict "
     CONFIG.pf2_bar2_size_qdma {4}
     CONFIG.pf3_bar2_scale_qdma {Megabytes}
     CONFIG.pf3_bar2_size_qdma {4}
-    CONFIG.PF0_MSIX_CAP_TABLE_SIZE_qdma {009}
+    CONFIG.PF0_MSIX_CAP_TABLE_SIZE_qdma {01F}
     CONFIG.PF1_MSIX_CAP_TABLE_SIZE_qdma {008}
     CONFIG.PF2_MSIX_CAP_TABLE_SIZE_qdma {008}
     CONFIG.PF3_MSIX_CAP_TABLE_SIZE_qdma {008}

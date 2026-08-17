@@ -17,6 +17,19 @@
 // *************************************************************************
 `include "open_nic_shell_macros.vh"
 `timescale 1ns/1ps
+
+// Boards carrying per-QSFP-cage status/activity LEDs wired to FPGA pins.
+// `ifdef takes no boolean OR, so collapse the board list into one macro used
+// by both the port declarations and the LED logic block near the end of file.
+// au55n (Varium C1100) has two cages; the Alveo U50 has one -- the width is
+// NUM_CMAC_PORT either way, so the same block serves both.
+`ifdef __au55n__
+  `define __qsfp_cage_leds__
+`endif
+`ifdef __au50__
+  `define __qsfp_cage_leds__
+`endif
+
 module open_nic_shell #(
   parameter [31:0] BUILD_TIMESTAMP = 32'h01010000,
   parameter int    MIN_PKT_LEN     = 64,
@@ -72,6 +85,12 @@ module open_nic_shell #(
 `elsif __au50__
   output                         hbm_cattrip,
   input                    [1:0] satellite_gpio,
+  // QSFP cage LEDs.  The U50 has a SINGLE QSFP28 cage (constr/au50/pins.xdc
+  // rejects num_ports > 1), so these are 1 bit wide via NUM_CMAC_PORT: a
+  // bi-colour link-status LED (green + yellow) plus a dedicated activity LED.
+  output   [NUM_CMAC_PORT-1:0] qsfp_activity_led,
+  output   [NUM_CMAC_PORT-1:0] qsfp_link_stat_ledg,
+  output   [NUM_CMAC_PORT-1:0] qsfp_link_stat_ledy,
 `elsif __au55n__
   output                         hbm_cattrip,
   input                    [3:0] satellite_gpio,
@@ -1424,7 +1443,7 @@ module open_nic_shell #(
   assign gpio_led[2] = cmac_link_up[0] & ~led_act_pulse[0];
 `endif
 
-  // --- QSFP cage LEDs (au55n / Varium C1100) --------------------------------
+  // --- QSFP cage LEDs (au55n / Varium C1100, and Alveo U50) -----------------
   // Per cage: a bi-colour link-status LED (green + yellow) and a separate
   // activity LED.
   //
@@ -1450,7 +1469,7 @@ module open_nic_shell #(
   // (cmac_link_up_sync is already synchronised into it); activity is driven
   // entirely from cmac_clk[k].  No output combines signals from two domains,
   // so this adds no CDC.  See the false path in constr/au55n/timing.xdc.
-`ifdef __au55n__
+`ifdef __qsfp_cage_leds__
   logic [26:0] qsfp_led_hb_cnt;
   always_ff @(posedge axil_aclk[0]) qsfp_led_hb_cnt <= qsfp_led_hb_cnt + 1'b1;
 

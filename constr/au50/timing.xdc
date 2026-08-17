@@ -204,3 +204,16 @@ set_property SHREG_EXTRACT NO [get_cells -quiet -hier -filter {NAME =~ *ptp_cloc
 # (gt_rxusrclk2 / cmac_clk) automatically.  If timing fails on these paths,
 # add a pblock to colocate them with the CMAC region.
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# QSFP cage LEDs: human-visible outputs, no timing relationship worth checking.
+# Each is driven from a single clock domain (green/yellow from axil_aclk via
+# cmac_link_up_sync, activity from cmac_clk[k]), so this only keeps them out of
+# the timing report rather than fixing a real crossing.  -quiet so a build
+# without the LED ports does not fail on "No valid object(s) found".
+# Mirrors constr/au55n/timing.xdc.
+# ---------------------------------------------------------------------------
+foreach led_port {qsfp_activity_led qsfp_link_stat_ledg qsfp_link_stat_ledy} {
+    set led_objs [get_ports -quiet ${led_port}*]
+    if {[llength $led_objs]} { set_false_path -to $led_objs }
+}

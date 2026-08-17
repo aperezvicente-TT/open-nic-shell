@@ -35,13 +35,17 @@ if {$num_ports >= 1} {
     set_property PACKAGE_PIN N37 [get_ports qsfp_refclk_n[0]]
     set_property PACKAGE_PIN N36 [get_ports qsfp_refclk_p[0]]
 
-# for future implemenation 
-#    set_property PACKAGE_PIN E18      [get_ports qsfp_activity_led[0]]
-#    set_property IOSTANDARD  LVCMOS18 [get_ports qsfp_activity_led[0]]
-#    set_property PACKAGE_PIN E16      [get_ports qsfp_link_stat_ledg[0]]
-#    set_property IOSTANDARD  LVCMOS18 [get_ports qsfp_link_stat_ledg[0]]
-#    set_property PACKAGE_PIN F17      [get_ports qsfp_link_stat_ledy[0]]
-#    set_property IOSTANDARD  LVCMOS18 [get_ports qsfp_link_stat_ledy[0]]
+# QSFP28 cage LEDs (enabled 2026-08-15).  Pins from the au50 board file,
+# board_files/Xilinx/au50/1.3/part0_pins.xml -- QSFP28_0_{ACTIVITY_LED,
+# STATUS_LEDG,STATUS_LEDY} at E18/E16/F17, LVCMOS18 drive 8.  The U50 has one
+# cage, so only index [0] exists (the num_ports >= 2 branch below exits).
+#   green    solid       link up
+#   yellow   ~1 Hz blink design alive but link DOWN
+#   activity ~4.8 Hz     traffic on the port
+# Driven by the `__qsfp_cage_leds__ block in src/open_nic_shell.sv.
+    set_property -dict {PACKAGE_PIN E18  IOSTANDARD LVCMOS18 DRIVE 8} [get_ports {qsfp_activity_led[0]}]
+    set_property -dict {PACKAGE_PIN E16  IOSTANDARD LVCMOS18 DRIVE 8} [get_ports {qsfp_link_stat_ledg[0]}]
+    set_property -dict {PACKAGE_PIN F17  IOSTANDARD LVCMOS18 DRIVE 8} [get_ports {qsfp_link_stat_ledy[0]}]
 }
 if {$num_ports >= 2} {
     puts "Alveo U50 has only one QSFP28 port, got $num_ports . Quitting"
