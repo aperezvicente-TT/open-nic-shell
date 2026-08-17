@@ -320,20 +320,36 @@ module qdma_subsystem #(
     .ODIV2 (pcie_refclk)
   );
 
-  assign h2c_byp_out_rdy            = 1'b1;
-  assign h2c_byp_in_st_vld          = 1'b0;
-  assign h2c_byp_in_st_addr         = 0;
-  assign h2c_byp_in_st_len          = 0;
-  assign h2c_byp_in_st_eop          = 1'b0;
-  assign h2c_byp_in_st_sop          = 1'b0;
-  assign h2c_byp_in_st_mrkr_req     = 1'b0;
-  assign h2c_byp_in_st_port_id      = 0;
-  assign h2c_byp_in_st_sdi          = 1'b0;
-  assign h2c_byp_in_st_qid          = 0;
-  assign h2c_byp_in_st_error        = 1'b0;
-  assign h2c_byp_in_st_func         = 0;
-  assign h2c_byp_in_st_cidx         = 0;
-  assign h2c_byp_in_st_no_dma       = 1'b0;
+  // H2C descriptor bypass passthrough (SG-TX Phase A). Inert unless the queue's
+  // SW context has bypass=1 (driver onic_qdma_init_tx_queue); with bypass=0 the
+  // IP runs internal mode and never drives h2c_byp_out_vld, so this is a no-op.
+  qdma_subsystem_h2c_byp h2c_byp_inst (
+    .h2c_byp_out_vld       (h2c_byp_out_vld),
+    .h2c_byp_out_dsc       (h2c_byp_out_dsc),
+    .h2c_byp_out_fmt       (h2c_byp_out_fmt),
+    .h2c_byp_out_st_mm     (h2c_byp_out_st_mm),
+    .h2c_byp_out_qid       (h2c_byp_out_qid),
+    .h2c_byp_out_cidx      (h2c_byp_out_cidx),
+    .h2c_byp_out_func      (h2c_byp_out_func),
+    .h2c_byp_out_port_id   (h2c_byp_out_port_id),
+    .h2c_byp_out_error     (h2c_byp_out_error),
+    .h2c_byp_out_rdy       (h2c_byp_out_rdy),
+
+    .h2c_byp_in_st_vld     (h2c_byp_in_st_vld),
+    .h2c_byp_in_st_addr    (h2c_byp_in_st_addr),
+    .h2c_byp_in_st_len     (h2c_byp_in_st_len),
+    .h2c_byp_in_st_sop     (h2c_byp_in_st_sop),
+    .h2c_byp_in_st_eop     (h2c_byp_in_st_eop),
+    .h2c_byp_in_st_mrkr_req(h2c_byp_in_st_mrkr_req),
+    .h2c_byp_in_st_port_id (h2c_byp_in_st_port_id),
+    .h2c_byp_in_st_sdi     (h2c_byp_in_st_sdi),
+    .h2c_byp_in_st_qid     (h2c_byp_in_st_qid),
+    .h2c_byp_in_st_error   (h2c_byp_in_st_error),
+    .h2c_byp_in_st_func    (h2c_byp_in_st_func),
+    .h2c_byp_in_st_cidx    (h2c_byp_in_st_cidx),
+    .h2c_byp_in_st_no_dma  (h2c_byp_in_st_no_dma),
+    .h2c_byp_in_st_rdy     (h2c_byp_in_st_rdy)
+  );
 
   assign c2h_byp_out_rdy            = 1'b1;
   assign c2h_byp_in_st_csh_vld      = 1'b0;

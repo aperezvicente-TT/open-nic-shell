@@ -1,0 +1,10 @@
+- [PTP Implementation](project_ptp_implementation.md) — PTP 1588 timestamping added to shell+driver, regs at BAR2+0x18000
+- [RDMA ERNIC Tier 1b in progress](project_rdma_tier1b.md) — Tier 1a DONE (27/27); Tier 1b QDMA AXI-MM wiring paused with TCL committed + open design questions in agent/reconic_integration/tier1b_qdma_audit.md
+- [tt-link bridge test runner](reference_tt_link_bridge_test.md) — WH erisc0 → AU200 CMAC0 first-light: build FW, manual TX via tt-exalens, FPGA BAR2 counter offsets
+- [WH FW TX stall bisect](reference_wh_fw_tx_stall_bisect.md) — two silent-TX-kill gotchas (CMAC needs continuous activity; TR_SIZE < 128 silently dropped). Reference when writing any custom WH FW.
+- [Don't cite ERNIC as a good architecture](feedback_no_ernic_reference.md) — user has direct frustration with ERNIC IP; reference public production NICs instead when proposing designs
+- [tt_rdma_v1_endpoint Phase A/B/C + review fixes landed](project_tt_rdma_v1_endpoint.md) — commit 9db9b3b, AU250 bitstream CSR-validated on silicon; next gate is WH FW + QDMA C2H for P1
+- [TT-RDMA-v1 P1 first-light end-to-end](project_tt_rdma_v1_first_light.md) — 2026-05-23: WH FW → CMAC → classifier → ring → QDMA C2H → host netdev byte-exact (32 frames × 64B = 2048 B verified)
+- [TT-RDMA-v1 header_cksum: keep RTL, default-OFF](project_tt_rdma_v1_header_cksum.md) — endpoint implements CRC32C validate but CTRL.cksum_check_en=0 at silicon; injector always computes; ecosystem-compatible + future-ready
+- [TT-RDMA-v1 QDMA path: P1 C2H ST + P2 AXI-MM bridge](project_tt_rdma_v1_qdma_path.md) — both coexist on same QDMA IP, no IP regen; sys-mem-mux rewrite to NUM_MASTERS generic queued for P2
+- [H2C no multi-desc gather](project_h2c_no_multidesc_gather.md) — au200 1PF/2CMAC QDMA H2C ST silently drops multi-descriptor packets → NETIF_F_SG scatter-gather TX disabled (needs FPGA fix); GRO already on

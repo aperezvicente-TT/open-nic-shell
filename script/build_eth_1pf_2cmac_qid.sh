@@ -15,6 +15,12 @@
 # Any arguments given are appended to the build.tcl -tclargs list and therefore
 # override the defaults below.
 #
+#
+# Uses the eth_2cmac_1pf plugin plus the EXT_QID qid graft.  EXT_QID=1 is hardcoded
+# on the qdma_subsystem instance in open_nic_shell.sv, so no extra build flag is
+# needed for it.  (Merged in from the parallel branch's version of this script; the
+# rest of that version hardcoded /opt/amd/Vivado/2024.2, which does not exist on
+# these hosts -- Vivado is under /opt/amd/fpga -- hence the search loop below.)
 # NOTE ON LICENSING: write_bitstream needs a full `cmac_usplus` license.  With only
 # the built-in Design_Linking entitlement, synthesis and implementation succeed but
 # bitstream generation fails at the very end of a multi-hour run — use
