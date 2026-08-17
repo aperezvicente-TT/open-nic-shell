@@ -48,6 +48,31 @@ create_ip -name qdma -vendor xilinx.com -library ip -module_name $qdma -dir ${ip
 # vectors -> 28 queues, matching the au200 file in this directory.
 # NB: keep comments OUTSIDE the set_property -dict braces below -- '#' is not a
 # comment inside a Tcl braced list, and each word becomes a bogus property.
+#
+# !! THIS CHANGE REQUIRES A NON-DEFAULT IMPLEMENTATION STRATEGY !!
+# Building it with "Vivado Implementation Defaults" produces a bitstream that
+# loads, enumerates with 28 queues, and is ~40% SLOWER than the 10-vector build.
+# Measured 2026-08-16 on the U50, same driver and load:
+#     original (10 vec, 6 queues)   86.9 / 70.2 Gb/s
+#     this (32 vec, 7/14/28 queues) 45.4 / 47.0 / 47.3 Gb/s   <- flat in queue count
+# Cause is WHICH CLOCK DOMAIN FAILS TIMING, not how much:
+#     original: 10 violated paths, ALL in txoutclk_out[0] (GT tx) -- tolerated
+#     default-strategy 32-vec: violations in axis_aclk_0 -- the AXI-Stream PACKET
+#     DATAPATH -- plus rxoutclk_out[0]
+# Datapath setup violations corrupt packets in flight; the smoking gun is
+# `ethtool -S <dev>`: stat_adapt_rx_drop 744745 vs 61988 under comparable load.
+# Note the default-strategy run had BETTER headline numbers (WNS -0.021 vs -0.083,
+# TNS -0.059 vs -7.959, 4 failing endpoints vs 206) and was still the broken one.
+# So: never accept an OpenNIC bitstream on WNS/TNS totals -- check the failing
+# path GROUPS, and treat anything in axis_aclk* as disqualifying.
+#
+# All five strategies tried closed timing completely (TNS 0.000, zero violated
+# paths): Performance_ExplorePostRoutePhysOpt, Performance_Explore,
+# Performance_ExtraTimingOpt, Performance_NetDelay_high,
+# Congestion_SpreadLogic_high.  Pass one via build.tcl's -impl_strategies.
+# NOT YET RE-MEASURED on hardware with a timing-clean 32-vector bitstream, so the
+# throughput this change is worth remains unproven; only that the default
+# strategy's bitstream is worse than doing nothing.
 set au50_gen4x8 [expr {[info exists pcie_gen4x8] && $pcie_gen4x8}]
 if {$au50_gen4x8} {
     set au50_pcie_intf {CONFIG.PCIE_BOARD_INTERFACE {pci_express_x8}}
