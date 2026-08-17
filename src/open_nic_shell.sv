@@ -124,6 +124,25 @@ module open_nic_shell #(
   input                    [1:0] satellite_gpio,
 `endif
 
+`ifdef __vcu1525__
+  // Additions on top of the reused __au200__ port set.
+  //
+  // i2c_*: the single shared board I2C bus (BF20/BF17).  There is no CMS on this
+  // board to own it, so the shell reads QSFP module diagnostics itself.
+  inout                          i2c_scl,
+  inout                          i2c_sda,
+  // qsfp*_fs / qsfp*_refclk_reset: the SI5335A QSFP refclk generators are
+  // FREQUENCY-SELECTABLE via these straps rather than fixed.  Driving them from
+  // the FPGA (as corundum's au200 design does) removes the dependency on however
+  // the board happens to be strapped -- otherwise a board set to 156.25 MHz would
+  // simply never lock a 100G CMAC configured for 161.1328125 MHz, with no
+  // diagnostic beyond "PMD not locked".
+  output                   [1:0] qsfp0_fs,
+  output                   [1:0] qsfp1_fs,
+  output                         qsfp0_refclk_reset,
+  output                         qsfp1_refclk_reset,
+`endif
+
   input                          satellite_uart_0_rxd,
   output                         satellite_uart_0_txd,
 
@@ -859,6 +878,13 @@ module open_nic_shell #(
     .satellite_uart_0_txd (satellite_uart_0_txd),
     .satellite_gpio_0     (satellite_gpio),
 
+  `ifdef __vcu1525__
+    // Shared board I2C, passed straight through; the IOBUFs live in
+    // system_config next to the AXI IIC that drives them.
+    .i2c_scl              (i2c_scl),
+    .i2c_sda              (i2c_sda),
+  `endif
+
   `ifdef __au280__
     .hbm_temp_1_0            (7'd0),
     .hbm_temp_2_0            (7'd0),
@@ -1404,6 +1430,31 @@ module open_nic_shell #(
     .axil_aclk                       (axil_aclk[0]),
     .cmac_clk                        (cmac_clk)
   );
+
+`ifdef __vcu1525__
+  // --- SI5335A QSFP reference-clock frequency select -------------------------
+  // FS = 0b10 selects 161.1328125 MHz, matching CONFIG.GT_REF_CLK_FREQ in the
+  // cmac_usplus_*_vcu1525 IP configs (and corundum's fpga_au200.xdc, which
+  // constrains the same refclk as "create_clock -period 6.206").
+  //
+  // Driving these rather than trusting the board straps is deliberate: the
+  // generators are FS-selectable and a board strapped for the U200's 156.25 MHz
+  // would never lock a CMAC built for 161.1328125, presenting only as
+  // "PMD not locked" with nothing to point at the clock.
+  //
+  // Per UG1268 the FS inputs are sampled only while REFCLK_RESET is ASSERTED, so
+  // hold reset high briefly after configuration to latch the selection, then
+  // release.  2^19 / ~125 MHz ~= 4 ms, comfortably longer than the SI5335A needs.
+  assign qsfp0_fs = 2'b10;
+  assign qsfp1_fs = 2'b10;
+
+  logic [19:0] refclk_fs_cnt = 20'd0;
+  always_ff @(posedge axil_aclk[0]) begin
+    if (!refclk_fs_cnt[19]) refclk_fs_cnt <= refclk_fs_cnt + 1'b1;
+  end
+  assign qsfp0_refclk_reset = ~refclk_fs_cnt[19];
+  assign qsfp1_refclk_reset = ~refclk_fs_cnt[19];
+`endif
 
   // --- LED logic (AU200/AU250: LED[0]=Red heartbeat, LED[1]=Yellow QSFP1, LED[2]=Green QSFP0) ---
 `ifdef __gpio_led__

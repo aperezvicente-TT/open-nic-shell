@@ -495,6 +495,25 @@ if {$board eq "au55n" && $num_qdma == 2} {
 if {$board eq "au50" && $pcie_gen4x8} {
     append verilog_define " " "__au50_gen4x8__"
 }
+# vcu1525: the VCU1525 and the Alveo U200 are the same board design (UG1268) --
+# identical PCIe refclk (AM11/AM10) and PERST (BD21), identical status LEDs
+# (BC21/BB21/BA20), identical QSFP sidebands and MSP432 satellite pins.  Emit
+# __au200__ as well so every `ifdef __au200__ branch in the RTL (top-level ports,
+# system_config CMS/satellite handling, gpio_led logic) applies unchanged instead
+# of being duplicated for a second name.  The genuine board differences are NOT
+# in RTL and are handled where they belong:
+#   - QSFP refclks on MGTREFCLK1 (K11/K10, P11/P10)  -> constr/vcu1525/pins.xdc
+#   - 161.1328125 MHz refclk, no *_BOARD_INTERFACE   -> *_vcu1525 IP tcls
+if {$board eq "vcu1525"} {
+    append verilog_define " " "__au200__"
+    # Make the three status LEDs actually work.  open_nic_shell.sv has a complete
+    # LED block (LED0 = heartbeat, LED1/LED2 = per-CMAC link with activity blink)
+    # but it is guarded by `__gpio_led__, which NOTHING in this repo ever defines
+    # -- so on au200/au250 the gpio_led[2:0] output is left completely undriven
+    # and the LEDs are dark.  Defining it here lights them on vcu1525.
+    # (au200/au250 have the same dead-code bug; not changing them unasked.)
+    append verilog_define " " "__gpio_led__"
+}
 set_property verilog_define $verilog_define [current_fileset]
 
 # Read IPs from finished IP runs

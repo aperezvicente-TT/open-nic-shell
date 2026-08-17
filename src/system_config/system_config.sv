@@ -189,6 +189,14 @@ module system_config #(
   input                   [1:0] satellite_gpio_0,
 `endif
 
+`ifdef __vcu1525__
+  // Shared board I2C bus (BF20/BF17).  Standalone rather than folded into the
+  // board chain above, because vcu1525 deliberately reuses the whole __au200__
+  // port set and only ADDS these two.  Open-drain, so inout + IOBUF inside.
+  inout                         i2c_scl,
+  inout                         i2c_sda,
+`endif
+
   input          [NUM_QDMA-1:0] aclk,
   input                         aresetn
 );
@@ -732,6 +740,88 @@ axi_lite_clock_converter axi_clock_conv_cms_inst (
       .m_axi_aresetn (cms_aresetn)
     );
 
+`ifdef __vcu1525__
+// ---------------------------------------------------------------------------
+// VCU1525: no Card Management Subsystem.
+//
+// cms_subsystem is an ALVEO-ONLY IP -- it is not accessible for the bare
+// xcvu9p part this board targets (no VCU1525 board file exists in Vivado
+// 2024.2), so instantiating it fails IP generation outright.  CMS does two
+// things that must be replaced rather than simply dropped:
+//
+//   1. It DRIVES the QSFP sidebands.  Tie them to a safe static state:
+//      resetl released (active-low), full power, module deselected -- there is
+//      no I2C master without CMS, so ModSelL is left inactive.  This is all the
+//      CMAC datapath needs; only reset and lpmode actually matter to it.
+//
+//   2. It ANSWERS the AXI-Lite card-management window.  With no responder, any
+//      access to that address range would stall the system_config crossbar
+//      forever (no BVALID/RVALID ever returns), hanging the whole control path
+//      on a stray register read.  So provide a minimal always-respond stub that
+//      completes every transaction and reads back zero.  Card management
+//      (temperatures, power, satellite comms) is simply unavailable here.
+// ---------------------------------------------------------------------------
+assign qsfp_resetl  = {2{1'b1}};   // active-low reset -> released
+assign qsfp_lpmode  = {2{1'b0}};   // 0 = full power, not low-power
+
+// CMS also drove the MSP432 satellite UART TX.  Park it at the UART idle level
+// so the pin is not left undriven; satellite_uart_0_rxd / satellite_gpio_0 are
+// inputs and need nothing.
+assign satellite_uart_0_txd = 1'b1;
+
+// ---------------------------------------------------------------------------
+// QSFP module management over the board I2C bus (replaces what CMS did).
+//
+// ONE shared bus reaches the FPGA (i2c_scl/i2c_sda); ModSelL is the chip select.
+// The AXI IIC sits in the address window CMS would have used, so the crossbar
+// and address map are untouched and the driver reaches it at the same BAR offset.
+//
+// ModSelL comes from the IIC's 2-bit GPO (active low, so inverted here).  GPO
+// resets to 0 => both cages deselected, which is the safe default.  The driver
+// selects a cage by writing GPO, then reads SFF-8636 page 0 at I2C addr 0x50.
+// ---------------------------------------------------------------------------
+wire [1:0] iic_gpo;
+wire       iic_scl_i, iic_scl_o, iic_scl_t;
+wire       iic_sda_i, iic_sda_o, iic_sda_t;
+
+assign qsfp_modsell = ~iic_gpo;
+
+// Open-drain I2C: drive low or release, never drive high.
+IOBUF iic_scl_iobuf (.I(iic_scl_o), .O(iic_scl_i), .T(iic_scl_t), .IO(i2c_scl));
+IOBUF iic_sda_iobuf (.I(iic_sda_o), .O(iic_sda_i), .T(iic_sda_t), .IO(i2c_sda));
+
+axi_iic_0 axi_iic_0_inst (
+  .s_axi_aclk    (cms_clk),
+  .s_axi_aresetn (cms_aresetn),
+
+  .s_axi_awaddr  (axil_cms_int_awaddr[8:0]),
+  .s_axi_awvalid (axil_cms_int_awvalid),
+  .s_axi_awready (axil_cms_int_awready),
+  .s_axi_wdata   (axil_cms_int_wdata),
+  .s_axi_wstrb   (axil_cms_int_wstrb),
+  .s_axi_wvalid  (axil_cms_int_wvalid),
+  .s_axi_wready  (axil_cms_int_wready),
+  .s_axi_bresp   (axil_cms_int_bresp),
+  .s_axi_bvalid  (axil_cms_int_bvalid),
+  .s_axi_bready  (axil_cms_int_bready),
+  .s_axi_araddr  (axil_cms_int_araddr[8:0]),
+  .s_axi_arvalid (axil_cms_int_arvalid),
+  .s_axi_arready (axil_cms_int_arready),
+  .s_axi_rdata   (axil_cms_int_rdata),
+  .s_axi_rresp   (axil_cms_int_rresp),
+  .s_axi_rvalid  (axil_cms_int_rvalid),
+  .s_axi_rready  (axil_cms_int_rready),
+
+  .iic2intc_irpt (),
+  .gpo           (iic_gpo),
+  .scl_i         (iic_scl_i),
+  .scl_o         (iic_scl_o),
+  .scl_t         (iic_scl_t),
+  .sda_i         (iic_sda_i),
+  .sda_o         (iic_sda_o),
+  .sda_t         (iic_sda_t)
+);
+`else
 cms_subsystem_wrapper
   cms_subsystem_wrapper_inst (
     .aclk_ctrl_0             (cms_clk),
@@ -792,5 +882,6 @@ cms_subsystem_wrapper
     .satellite_uart_0_rxd    (satellite_uart_0_rxd),
     .satellite_uart_0_txd    (satellite_uart_0_txd)
   );
+`endif  // __vcu1525__ : CMS present on Alveo parts, stubbed above on VCU1525
 
 endmodule: system_config
